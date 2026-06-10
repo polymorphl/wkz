@@ -4,9 +4,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 
 ## Current focus
 
-**M2.2 — ScriptMessageHandler class (`userContentController:didReceiveScriptMessage:`), registered as `"bridge"`.** (M2.1 DONE.)
-
-> **M2.2 API decision pending (orchestrator → human):** `defineClass` registers the class immediately, but `class_addIvar` is only legal *before* `registerClassPair`. M2.2 needs a context ivar (Zig→handler pointer) added before registration. Options: (a) add an optional `ivars` tuple param to `defineClass` (allocate → addIvar → addMethod → register); (b) M2.2 open-codes the allocate/addIvar/addMethod/register sequence, bypassing `defineClass`; (c) pass context via `objc_setAssociatedObject` instead of an ivar (no pre-registration constraint). Decide before dispatching M2.2.
+**M2.3 — NSDictionary → Zig extraction, std.json parse, dispatch table.** (M2.1, M2.2 DONE.)
 
 ---
 
@@ -25,7 +23,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 | ID | Task | Status |
 |----|------|--------|
 | 2.1 | `objc_helpers.zig` runtime class creation (allocateClassPair + method registration), unit-tested | DONE |
-| 2.2 | ScriptMessageHandler class implementing `userContentController:didReceiveScriptMessage:`, registered as `"bridge"` | TODO |
+| 2.2 | ScriptMessageHandler class implementing `userContentController:didReceiveScriptMessage:`, registered as `"bridge"` | DONE |
 | 2.3 | NSDictionary → Zig extraction, std.json parse, dispatch table | TODO |
 | 2.4 | Malformed input logs, never crashes | TODO |
 
@@ -61,6 +59,9 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 
 ## Log
 
+- M2.2 — orchestrator — code-reviewer APPROVE_WITH_MINORS (no CRITICAL/MAJOR; all 4 lifetime/ABI risks verified safe — raw `*Bridge` in id ivar is no-retain under MRC per zig-objc object.zig, init/attach address-stability sound, deinit deregisters before release, IMP C-ABI/derived-encoding correct). MINOR#1 (controller-identity claim only doc-verified) closed by test-runner; MINOR#2 (OnMessage seam) accepted clean; MINOR#3 (Bridge allocator-free) deferred to M2.3. test-runner 53/53 (3× stable), 0 impl bugs. `zig build` + `zig build test` exit 0. Committed. → DONE
+- M2.2 — test-runner — 53/53 (52 lib + 1 example), 3× deterministic, exit 0. Closed reviewer MINOR#1: added controller pointer-identity test (webview.zig) proving `userContentController()` returns a stable controller AND that independent `configuration` copies share the one controller instance (load-bearing routing precondition). Added handler negative-selector control + IMP nil-ivar-guard test (bridge.zig). 0 impl bugs. Residual: live JS `postMessage` routing → manual checklist M2.2-G2. → TESTING
+- M2.2 — zig-developer — implemented `src/bridge.zig`: `Bridge{init/attach/handleMessage/deinit}`. Open-coded handler class `WkzScriptMessageHandler` (getClass guard → allocateClassPair(NSObject) → addIvar("wkz_ctx") → addMethod(userContentController:didReceiveScriptMessage:, imp) → registerClassPair) per the human decision. IMP (C-ABI, derived encoding) recovers `*Bridge` from the raw-pointer ivar (no-ARC-safe: object_setIvar/getIvar are raw stores under MRC, context borrowed not retained) and routes `body` to a swappable `OnMessage` callback (M2.3 seam, defaults to logMessage). init-by-value + attach(*Bridge) split for stable address; deinit removeScriptMessageHandlerForName: before release. Added `WebView.userContentController()` accessor. Handler +1 owned by Bridge (controller also retains), name NSString +1/defer-released. `zig build` + `zig build test` green (50/50). → IN_REVIEW
 - M2.1 — orchestrator — code-reviewer APPROVE (zero findings; no-ARC correct — registered classes process-lived not refcounted, test instances defer-released, NSString +0 not over-released; encodings derived from fn types via zig-objc comptimeEncode not hand-written; IMPs C-ABI with c.id/c.SEL first; nil allocateClassPair → ClassRegistrationFailed, no deref; idempotency guard correct). test-runner 41/41 (3× stable), 0 impl bugs. `zig build` + `zig build test` exit 0. Committed. → DONE
 - M2.1 — test-runner — added 4 live tests (mixed-width/type arg marshalling i64/i32/bool; negative selector-response; addIvar false after-register; addIvar false on duplicate). Suite 41/41 (40 lib + 1 example), stable across 3 runs, exit 0. Noted `ClassRegistrationFailed` runtime branch is unreachable via the `getClass` idempotency guard (design observation, not a bug); `addMethod` false is `assert`-guarded so not observable. Zero implementation bugs. Fully headless — no GUI checklist. → TESTING
 - M2.1 — zig-developer — implemented `src/objc_helpers.zig`: `defineClass(name, super, methods) Error!Class` (idempotent via getClass guard; allocateClassPair → addMethod → registerClassPair), `addIvar(cls, name) bool` (id-typed M2.2 context slot), `method(name, imp)` spec builder preserving imp's concrete fn type, `Error{ClassRegistrationFailed}`. Uses zig-objc wrappers; encodings derived (not hand-written); IMPs plain C-ABI Zig fns. Per-instance M2.2 context decided = id ivar (over associated-object). 5 tests (3 live create→send→assert + ivar round-trip, 2 compile-time). `zig build` + `zig build test` green (37/37). → IN_REVIEW
@@ -82,6 +83,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 ## Decisions
 
 - **zig-objc ref**: pinned to commit `c8de82ff80281215ad92900866dab7103a8efa8b` (main HEAD, 2026-04-17). This is the first line that includes "Add Zig 0.16 compatibility" (`fd36c1c`) + the 0.16 translate-c bug fix (`41ea96c`); no 0.16-tagged release exists, so pin by hash rather than `master`.
+- **M2.2 handler context attachment** (human decision, 2026-06-10): M2.2 **open-codes** the class-creation sequence (`allocateClassPair` → `addIvar("ctx")` → `addMethod` → `registerClassPair`) directly, rather than extending `defineClass` with an `ivars` param or using `objc_setAssociatedObject`. The Zig bridge context pointer is stored in an `id`-typed ivar read back in the IMP via `object_getInstanceVariable`. `defineClass` (M2.1) stays as-is for the ivar-free case.
 - **`src/root.zig` added** as the public API aggregator (not in the original architecture list). Idiomatic Zig module root; re-exports app/window/webview/bridge and keeps scheme/objc_helpers internal but in the test graph.
 
 ## Manual GUI checklist
@@ -116,6 +118,14 @@ GUI behaviour cannot run under headless `zig build test` (no window server / blo
 - **M1.5-G5 (inspector):** right-click → "Inspect Element" opens the Web Inspector (macOS 13.3+).
 - **M1.5-G6 (Cmd+Q):** app menu has a single Quit (⌘Q); pressing it terminates cleanly, `zig build run` returns.
 - **M1.5-G7 (dev banner):** stdout shows `dev mode: true` under `-Ddev=true`, `dev mode: false` for the default build.
+
+### M2.2 — JS→Zig bridge handler (live JS round-trip; needs run loop + loaded page, wired in M2.4/M3)
+
+- **M2.2-G1 (handler reachable):** in the loaded page's console, `window.webkit.messageHandlers.bridge` is defined (an object), not `undefined`.
+- **M2.2-G2 (IMP fires + routing):** `window.webkit.messageHandlers.bridge.postMessage("hello")` logs `wkz bridge: received message ...` on stdout — proves the IMP fired and recovered context on the controller the live webview actually routes through (the leg the headless identity test cannot prove).
+- **M2.2-G3 (body shapes):** posting a string / number / object each logs the matching ObjC body class (`__NSCFString` / `__NSCFNumber` / `__NSDictionary…`), confirming body reachable for M2.3 extraction.
+- **M2.2-G4 (ordering):** handler installed (`Bridge.attach`) before page load; a page that posts on load is received (no message lost).
+- **M2.2-G5 (teardown):** Cmd+Q after exercising the bridge quits cleanly (handler deregistered, no abort).
 
 ## Blocked
 

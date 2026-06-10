@@ -102,6 +102,25 @@ pub const WebView = struct {
         content_view.msgSend(void, "addSubview:", .{self.ns_webview});
     }
 
+    /// The webview's `WKUserContentController` — the object script message
+    /// handlers are registered on (see `bridge.zig`). Reached via
+    /// `-[WKWebView configuration]` → `-[WKWebViewConfiguration userContentController]`.
+    ///
+    /// `-[WKWebView configuration]` returns a *copy* of the configuration, but
+    /// that copy keeps a strong reference to the same `WKUserContentController`
+    /// instance the live webview routes messages through — so a handler added to
+    /// the returned controller takes effect for this webview. The returned
+    /// reference is owned by the configuration/webview, not the caller: do NOT
+    /// release it. Must be called on the main thread.
+    ///
+    /// Ordering note: a handler must be installed BEFORE content that posts to it
+    /// is loaded — `addScriptMessageHandler:name:` only affects content loaded
+    /// after the call. Install via `bridge.zig` before `loadHTMLString`.
+    pub fn userContentController(self: WebView) objc.Object {
+        const config = self.ns_webview.msgSend(objc.Object, "configuration", .{});
+        return config.msgSend(objc.Object, "userContentController", .{});
+    }
+
     /// Load an inline HTML page via `-[WKWebView loadHTMLString:baseURL:]`.
     /// `base_url` is passed as nil (no relative-URL resolution base), which is
     /// fine for self-contained HTML. The HTML NSString is built transiently and
@@ -164,6 +183,13 @@ test "WebView exposes the documented public API surface" {
 
     try std.testing.expectEqual(void, @typeInfo(@TypeOf(WebView.attach)).@"fn".return_type.?);
 
+    // userContentController() exposes the WKUserContentController the bridge
+    // registers script message handlers on (M2.2).
+    try std.testing.expectEqual(
+        objc.Object,
+        @typeInfo(@TypeOf(WebView.userContentController)).@"fn".return_type.?,
+    );
+
     const LoadRet = @typeInfo(@TypeOf(WebView.loadHTMLString)).@"fn".return_type.?;
     try std.testing.expectEqual(Error!void, LoadRet);
 
@@ -203,6 +229,9 @@ test "WKWebView/WKWebViewConfiguration respond to the selectors used" {
         "addSubview:",
         "bounds",
         "release",
+        // userContentController() reaches the WKUserContentController through the
+        // webview's configuration; assert both legs resolve.
+        "configuration",
     };
     inline for (wk_selectors) |name| {
         try std.testing.expect(WKWebView.msgSend(
@@ -253,6 +282,63 @@ test "init() builds a live WKWebView and deinit() releases it" {
     const frame: CGRect = wv.ns_webview.msgSend(CGRect, "frame", .{});
     try std.testing.expectEqual(@as(CGFloat, 0), frame.size.width);
     try std.testing.expectEqual(@as(CGFloat, 0), frame.size.height);
+}
+
+test "userContentController() returns a live WKUserContentController" {
+    // The bridge (M2.2) installs its script message handler on this controller.
+    // configuration/userContentController traversal is headless-safe (no window
+    // server) — verified alongside the other WKWebView init plumbing.
+    const wv = try WebView.init();
+    defer wv.deinit();
+
+    const ucc = wv.userContentController();
+    try std.testing.expect(ucc.value != null);
+    try std.testing.expect(ucc.msgSend(
+        bool,
+        "isKindOfClass:",
+        .{objc.getClass("WKUserContentController").?},
+    ));
+}
+
+test "userContentController() returns a stable, identical controller across calls" {
+    // Load-bearing precondition for the bridge (M2.2): a handler added via the
+    // accessor must fire on the live webview. That requires the accessor to
+    // return the SAME WKUserContentController instance every time — not a fresh
+    // throwaway. -[WKWebView configuration] returns a *copy* of the
+    // configuration, so the open question the reviewer flagged is whether the
+    // copy's userContentController is a stable instance. Here we PROVE pointer
+    // identity that is headlessly observable:
+    //
+    //   (a) Two calls to the accessor return the exact same controller pointer.
+    //   (b) The controller reached via a *separately fetched* configuration copy
+    //       is the same pointer too — i.e. each configuration copy strong-refs
+    //       the one shared controller, it is not minted per configuration copy.
+    //
+    // What this does NOT prove (residual gap, manual checklist M2.2-G2): that
+    // THIS controller instance is the one the live page's JS postMessage is
+    // routed through. The only true proof of routing is a real JS round-trip on
+    // a window-server-backed WKWebView with a loaded page + pumped run loop,
+    // which is not headless. We assert instance stability/consistency here and
+    // defer routing to the manual checklist.
+    const wv = try WebView.init();
+    defer wv.deinit();
+
+    // (a) Same instance across two accessor calls.
+    const ucc1 = wv.userContentController();
+    const ucc2 = wv.userContentController();
+    try std.testing.expect(ucc1.value != null);
+    try std.testing.expectEqual(ucc1.value, ucc2.value);
+
+    // (b) Same instance when reached through an independently-fetched
+    // configuration copy. If each -[configuration] copy minted its own fresh
+    // controller, these pointers would differ and the bridge would silently
+    // register handlers on a controller the live webview never consults.
+    const config_a = wv.ns_webview.msgSend(objc.Object, "configuration", .{});
+    const config_b = wv.ns_webview.msgSend(objc.Object, "configuration", .{});
+    const ucc_via_a = config_a.msgSend(objc.Object, "userContentController", .{});
+    const ucc_via_b = config_b.msgSend(objc.Object, "userContentController", .{});
+    try std.testing.expectEqual(ucc1.value, ucc_via_a.value);
+    try std.testing.expectEqual(ucc1.value, ucc_via_b.value);
 }
 
 test "loadHTMLString() runs headless on a live WKWebView" {
