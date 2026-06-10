@@ -4,7 +4,9 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 
 ## Current focus
 
-**M2.1 — `objc_helpers.zig` runtime class creation.** (M1 complete — all of M1.1–M1.5 DONE.)
+**M2.2 — ScriptMessageHandler class (`userContentController:didReceiveScriptMessage:`), registered as `"bridge"`.** (M2.1 DONE.)
+
+> **M2.2 API decision pending (orchestrator → human):** `defineClass` registers the class immediately, but `class_addIvar` is only legal *before* `registerClassPair`. M2.2 needs a context ivar (Zig→handler pointer) added before registration. Options: (a) add an optional `ivars` tuple param to `defineClass` (allocate → addIvar → addMethod → register); (b) M2.2 open-codes the allocate/addIvar/addMethod/register sequence, bypassing `defineClass`; (c) pass context via `objc_setAssociatedObject` instead of an ivar (no pre-registration constraint). Decide before dispatching M2.2.
 
 ---
 
@@ -22,7 +24,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 
 | ID | Task | Status |
 |----|------|--------|
-| 2.1 | `objc_helpers.zig` runtime class creation (allocateClassPair + method registration), unit-tested | TODO |
+| 2.1 | `objc_helpers.zig` runtime class creation (allocateClassPair + method registration), unit-tested | DONE |
 | 2.2 | ScriptMessageHandler class implementing `userContentController:didReceiveScriptMessage:`, registered as `"bridge"` | TODO |
 | 2.3 | NSDictionary → Zig extraction, std.json parse, dispatch table | TODO |
 | 2.4 | Malformed input logs, never crashes | TODO |
@@ -59,6 +61,9 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 
 ## Log
 
+- M2.1 — orchestrator — code-reviewer APPROVE (zero findings; no-ARC correct — registered classes process-lived not refcounted, test instances defer-released, NSString +0 not over-released; encodings derived from fn types via zig-objc comptimeEncode not hand-written; IMPs C-ABI with c.id/c.SEL first; nil allocateClassPair → ClassRegistrationFailed, no deref; idempotency guard correct). test-runner 41/41 (3× stable), 0 impl bugs. `zig build` + `zig build test` exit 0. Committed. → DONE
+- M2.1 — test-runner — added 4 live tests (mixed-width/type arg marshalling i64/i32/bool; negative selector-response; addIvar false after-register; addIvar false on duplicate). Suite 41/41 (40 lib + 1 example), stable across 3 runs, exit 0. Noted `ClassRegistrationFailed` runtime branch is unreachable via the `getClass` idempotency guard (design observation, not a bug); `addMethod` false is `assert`-guarded so not observable. Zero implementation bugs. Fully headless — no GUI checklist. → TESTING
+- M2.1 — zig-developer — implemented `src/objc_helpers.zig`: `defineClass(name, super, methods) Error!Class` (idempotent via getClass guard; allocateClassPair → addMethod → registerClassPair), `addIvar(cls, name) bool` (id-typed M2.2 context slot), `method(name, imp)` spec builder preserving imp's concrete fn type, `Error{ClassRegistrationFailed}`. Uses zig-objc wrappers; encodings derived (not hand-written); IMPs plain C-ABI Zig fns. Per-instance M2.2 context decided = id ivar (over associated-object). 5 tests (3 live create→send→assert + ivar round-trip, 2 compile-time). `zig build` + `zig build test` green (37/37). → IN_REVIEW
 - **M1 COMPLETE** — all M1.1–M1.5 DONE. `zig build run` opens a real, centered, titled, resizable window with a WKWebView filling the contentView rendering an inline page; Cmd+Q quits. Full suite 32/32 green. Manual GUI verification consolidated in checklist M1.5-G1..G7 (exercises deferred M1.2/M1.3/M1.4 GUI items end-to-end). Next milestone: M2 (JS→Zig bridge), starting M2.1 `objc_helpers.zig`.
 - M1.5 — orchestrator — code-reviewer APPROVE (zero findings; lifetime reasoning sound — run() blocks, terminate: exits process so post-run deinit is unreachable dead code, each struct holds a single +1, no double-release/use-after-free, no false no-leak claim; ordering App→Window→attach correct; API signatures + [:0]const u8 HTML literal verified). test-runner green 32/32 (3× deterministic); `zig build run -Ddev=true` smoke-test launched + blocked on run loop (timeout-kill 124, no crash). Committed. → DONE
 - M1.5 — test-runner — 32/32 (31 lib + 1 example refAllDecls), 3/3 deterministic runs exit 0; `zig build` exit 0; `zig build run -Ddev=true` smoke-test launched + blocked on run loop (timeout-kill 124, no crash, window server present). No new tests (entrypoint blocks; wired types covered in their own modules; refAllDecls forces compile). Authored M1.5-G1..G7 manual GUI checklist covering deferred M1.2/M1.3/M1.4 GUI behaviour end-to-end. → TESTING
