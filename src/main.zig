@@ -41,6 +41,16 @@ const hello_html: [:0]const u8 =
 pub fn main() !void {
     std.log.info("wkz example — dev mode: {}", .{build_options.dev});
 
+    // Allocator for Bridge (JSON parsing, dispatch table, JS string building).
+    // std.heap.GeneralPurposeAllocator was renamed to std.heap.DebugAllocator in
+    // Zig 0.16 (heap.zig:20). Lives for the entire process lifetime.
+    // NOTE: `defer _ = gpa.deinit()` is intentionally dead code — app.run() below
+    // blocks until AppKit's `terminate:` exits the process directly, so the defer
+    // can never fire. It is written for clarity (leak detection in a hypothetical
+    // early-return path) and the OS reclaims memory on exit.
+    var gpa = std.heap.DebugAllocator(.{}).init;
+    defer _ = gpa.deinit();
+
     // Order matters: the shared NSApplication must exist before any window is
     // created, so App.init() runs first.
     const app = try wkz.app.App.init();
@@ -49,11 +59,43 @@ pub fn main() !void {
     // see the lifetime note on `run()` below for why no deinit is called.
     const window = try wkz.window.Window.init(900, 600, "wkz");
 
-    // WKWebView, attached to (and filling) the window's contentView, loading the
-    // inline page. attach() reads the contentView's bounds, so the window must
-    // already exist — which it does, by the ordering above.
+    // WKWebView, attached to (and filling) the window's contentView. attach()
+    // reads the contentView's bounds, so the window must already exist.
     const webview = try wkz.webview.WebView.init();
     webview.attach(window);
+
+    // Bridge must be fully wired BEFORE content is loaded: addScriptMessageHandler
+    // only takes effect for content loaded after the call (WebKit requirement).
+    //
+    // Bridge.init takes the raw WKWebView objc.Object (webview.ns_webview) so it
+    // can call evaluateJavaScript:completionHandler: for replies. The
+    // WKUserContentController comes from webview.userContentController().
+    //
+    // init() returns a by-value Bridge; we then place it at a stable address
+    // (the local `bridge`) and call attach(*Bridge) to write that address into
+    // the handler's ivar. The IMP will recover this pointer on every message.
+    //
+    // NOTE: `bridge.deinit()` is intentionally omitted — app.run() blocks; the
+    // process exits via terminate: and the OS reclaims everything. Installing a
+    // defer here would be dead code identical to the webview/window situation.
+    var bridge = try wkz.bridge.Bridge.init(
+        gpa.allocator(),
+        webview.userContentController(),
+        webview.ns_webview,
+    );
+    try bridge.attach();
+
+    // Demo "ping" → "pong" round-trip. The frontend calls:
+    //   invoke("ping", {})  ->  JS postMessage({method:"ping",id:N})
+    // The bridge dispatches here, and resolve(id, `"pong"`) evaluates:
+    //   __resolve(N, "pong")
+    // in the webview, completing the promise on the JS side.
+    try bridge.registerHandler("ping", struct {
+        fn handle(b: *wkz.bridge.Bridge, _: std.json.Value, id: ?i64) void {
+            if (id) |i| b.resolve(i, "\"pong\"") catch {};
+        }
+    }.handle);
+
     if (build_options.dev) {
         // Dev mode: load the Vite dev server. Requires NSAllowsLocalNetworking=YES
         // in Info.plist when running as a sandboxed .app bundle (M4). Under
@@ -66,10 +108,9 @@ pub fn main() !void {
     // Foreground the app, then enter the AppKit run loop. `run()` blocks until
     // the user quits (Cmd+Q -> `terminate:`), and AppKit's `terminate:` exits
     // the process directly — it does NOT return control to Zig. Therefore no
-    // `defer window.deinit()` / `defer webview.deinit()` is installed: such a
-    // defer would be dead code (it could never fire), and the OS reclaims the
-    // process's memory on exit. The window and webview are intentionally kept
-    // alive for the entire run-loop / process lifetime.
+    // `defer window.deinit()` / `defer webview.deinit()` / `defer bridge.deinit()`
+    // is installed: such defers would be dead code (they could never fire), and
+    // the OS reclaims the process's memory on exit.
     app.activate();
     app.run();
 }

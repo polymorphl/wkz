@@ -15,18 +15,7 @@
 // TypeScript augmentations
 // ---------------------------------------------------------------------------
 
-// Vite's HMR API on import.meta.hot — declared locally so this package does
-// not need vite as a devDependency. Only the dispose callback path is used.
-interface ViteHotContext {
-  dispose(cb: () => void): void;
-}
-
 declare global {
-  interface ImportMeta {
-    // Present only in a Vite dev build; undefined in production bundles.
-    readonly hot?: ViteHotContext;
-  }
-
   // Installed by this module; called by Zig via evaluateJavaScript.
   function __resolve(id: number, result: string): void;
 
@@ -87,8 +76,11 @@ globalThis.__resolve = function __resolve(id: number, result: string): void {
 // HMR — idempotent teardown on hot reload
 // ---------------------------------------------------------------------------
 
-if (import.meta.hot) {
-  import.meta.hot.dispose(() => {
+// `import.meta.hot` is typed by vite/client when compiled inside the frontend;
+// when bridge-js is compiled standalone (no vite types), we cast through unknown.
+const _hot = (import.meta as unknown as { hot?: { dispose(cb: () => void): void } }).hot;
+if (_hot) {
+  _hot.dispose(() => {
     // Pending promises can never resolve — the Zig context that would have
     // called __resolve is gone. Reject them so callers don't leak.
     for (const [, pending] of pendingCalls) {
