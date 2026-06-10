@@ -4,7 +4,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 
 ## Current focus
 
-**M2.3 — NSDictionary → Zig extraction, std.json parse, dispatch table.** (M2.1, M2.2 DONE.)
+**M2.4 — Malformed input logs, never crashes.** (M2.1, M2.2, M2.3 DONE.)
 
 ---
 
@@ -24,7 +24,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 |----|------|--------|
 | 2.1 | `objc_helpers.zig` runtime class creation (allocateClassPair + method registration), unit-tested | DONE |
 | 2.2 | ScriptMessageHandler class implementing `userContentController:didReceiveScriptMessage:`, registered as `"bridge"` | DONE |
-| 2.3 | NSDictionary → Zig extraction, std.json parse, dispatch table | TODO |
+| 2.3 | NSDictionary → Zig extraction, std.json parse, dispatch table | DONE |
 | 2.4 | Malformed input logs, never crashes | TODO |
 
 ## M3 — Typed RPC + Vite
@@ -59,6 +59,9 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 
 ## Log
 
+- M2.3 — orchestrator — code-reviewer APPROVE_WITH_MINORS (no CRITICAL/MAJOR; parse-arena freed on all paths, params borrow call-scoped + documented, static-literal map keys, no panic on malformed, std.json/StringHashMap signatures spot-checked real). 2 MINORs sent back to zig-developer (fix cycle 1): null-`UTF8String` crash guard added; dead `_ = root.get("id")` removed. MINOR#3 (body size-cap) → M2.4. Re-verified green by orchestrator + test-runner 65/65 (seed-independent ×6), 0 impl bugs. Committed. → DONE
+- M2.3 — test-runner — suite 65/65 (64 lib + 1 example), exit 0, seed-independent across 6 runs. Added 5 headless tests under testing.allocator (unknown-method arena-free — the MAJOR-risk leak path; nested object/array params intact; non-object params pass-through unvalidated; multi-handler routing discriminates by key; populated-map deinit frees N entries). No impl bugs. Residual: `UTF8String`-null defensive guard + live-JS round-trip remain manual (M2.2-G/M2.3 checklist). → TESTING
+- M2.3 — zig-developer — implemented JSON-string dispatch in `src/bridge.zig` per wire-format decision: body NSString → `UTF8String` → `std.json.parseFromSlice` → method/params/(id seam) → `std.StringHashMap(Handler)` lookup → invoke. `Bridge.init(allocator, ucc)` owns the map; `addHandler(method, fn)` runtime registration; pure `dispatchSlice([]const u8)` core (NSString-free, headless-testable); `dispatchMessage` does the ObjC leg. `DispatchError{InvalidMessage,MissingMethod,UnknownMethod}||Allocator.Error`. No ARC (UTF8String borrowed/not freed, Parsed.deinit on all paths, map freed in deinit, handler +1 still released). Fix cycle 1 applied 2 review MINORs (null-UTF8String guard; dead-id removal). `zig build` + `zig build test` green (60→65/65). → IN_REVIEW
 - M2.2 — orchestrator — code-reviewer APPROVE_WITH_MINORS (no CRITICAL/MAJOR; all 4 lifetime/ABI risks verified safe — raw `*Bridge` in id ivar is no-retain under MRC per zig-objc object.zig, init/attach address-stability sound, deinit deregisters before release, IMP C-ABI/derived-encoding correct). MINOR#1 (controller-identity claim only doc-verified) closed by test-runner; MINOR#2 (OnMessage seam) accepted clean; MINOR#3 (Bridge allocator-free) deferred to M2.3. test-runner 53/53 (3× stable), 0 impl bugs. `zig build` + `zig build test` exit 0. Committed. → DONE
 - M2.2 — test-runner — 53/53 (52 lib + 1 example), 3× deterministic, exit 0. Closed reviewer MINOR#1: added controller pointer-identity test (webview.zig) proving `userContentController()` returns a stable controller AND that independent `configuration` copies share the one controller instance (load-bearing routing precondition). Added handler negative-selector control + IMP nil-ivar-guard test (bridge.zig). 0 impl bugs. Residual: live JS `postMessage` routing → manual checklist M2.2-G2. → TESTING
 - M2.2 — zig-developer — implemented `src/bridge.zig`: `Bridge{init/attach/handleMessage/deinit}`. Open-coded handler class `WkzScriptMessageHandler` (getClass guard → allocateClassPair(NSObject) → addIvar("wkz_ctx") → addMethod(userContentController:didReceiveScriptMessage:, imp) → registerClassPair) per the human decision. IMP (C-ABI, derived encoding) recovers `*Bridge` from the raw-pointer ivar (no-ARC-safe: object_setIvar/getIvar are raw stores under MRC, context borrowed not retained) and routes `body` to a swappable `OnMessage` callback (M2.3 seam, defaults to logMessage). init-by-value + attach(*Bridge) split for stable address; deinit removeScriptMessageHandlerForName: before release. Added `WebView.userContentController()` accessor. Handler +1 owned by Bridge (controller also retains), name NSString +1/defer-released. `zig build` + `zig build test` green (50/50). → IN_REVIEW
@@ -83,6 +86,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 ## Decisions
 
 - **zig-objc ref**: pinned to commit `c8de82ff80281215ad92900866dab7103a8efa8b` (main HEAD, 2026-04-17). This is the first line that includes "Add Zig 0.16 compatibility" (`fd36c1c`) + the 0.16 translate-c bug fix (`41ea96c`); no 0.16-tagged release exists, so pin by hash rather than `master`.
+- **M2.3 wire format** (human decision, 2026-06-10): JS sends a **JSON string** — `bridge.postMessage(JSON.stringify({method, params, id}))`. Zig reads the body NSString via `UTF8String` → `std.json.parseFromSlice`. NOT a native NSDictionary walk. `Bridge` gains an `Allocator` (via `init`) for JSON parsing, satisfying the allocator-first rule. Cleanest seam for M3 typed RPC; bridge-js client owns the stringify.
 - **M2.2 handler context attachment** (human decision, 2026-06-10): M2.2 **open-codes** the class-creation sequence (`allocateClassPair` → `addIvar("ctx")` → `addMethod` → `registerClassPair`) directly, rather than extending `defineClass` with an `ivars` param or using `objc_setAssociatedObject`. The Zig bridge context pointer is stored in an `id`-typed ivar read back in the IMP via `object_getInstanceVariable`. `defineClass` (M2.1) stays as-is for the ivar-free case.
 - **`src/root.zig` added** as the public API aggregator (not in the original architecture list). Idiomatic Zig module root; re-exports app/window/webview/bridge and keeps scheme/objc_helpers internal but in the test graph.
 
