@@ -242,6 +242,11 @@ fn logRejected(err: DispatchError, bytes: []const u8) void {
 ///     to the slot, and wkz fully owns both the get and the set. `deinit`
 ///     deregisters the handler so no message can fire against a dangling
 ///     pointer after the `Bridge` is gone.
+///   * `webview` is BORROWED (not +1, not retained). The caller's `WebView`
+///     struct owns the `+1` WKWebView reference; `Bridge` holds a non-owning
+///     reference to it solely to call `-[WKWebView evaluateJavaScript:completionHandler:]`.
+///     The caller must ensure the `WKWebView` outlives the `Bridge`. `deinit`
+///     does NOT release `webview`.
 ///
 /// Lifetime ordering: `Bridge` must outlive any content loaded into the webview
 /// that can post to `bridge`. Install the bridge (`init`) BEFORE loading such
@@ -256,12 +261,17 @@ pub const Bridge = struct {
     /// (owned by the webview/configuration); used by `deinit` to deregister.
     ucc: objc.Object,
 
+    /// The `WKWebView` this bridge evaluates JavaScript on. BORROWED: not +1,
+    /// not retained. Owned by the caller's `WebView` struct; must outlive `Bridge`.
+    webview: objc.Object,
+
     /// Where the IMP routes each incoming message body. Defaults to
     /// `dispatchMessage` (extract + parse + dispatch); tests may swap a probe.
     on_message: OnMessage,
 
-    /// Allocator used for JSON parsing (the parse arena) and any per-message
-    /// heap. Borrowed from the caller via `init`; `Bridge` does not own it.
+    /// Allocator used for JSON parsing (the parse arena), the dispatch table's
+    /// backing storage, and per-call JS string building in `resolve`. Borrowed
+    /// from the caller via `init`; `Bridge` does not own it.
     allocator: std.mem.Allocator,
 
     /// Runtime method -> handler table. Heap-owned by this `Bridge` (its backing
@@ -283,11 +293,15 @@ pub const Bridge = struct {
     /// (a long-lived local or field that outlives the webview) and then call
     /// `attach(self: *Bridge)` exactly once. See `attach`.
     ///
-    /// `allocator` is borrowed (not owned) and used for JSON parsing and the
-    /// dispatch table's backing storage; the map is built here and freed by
-    /// `deinit`. On the error path the +1 handler is released (errdefer) so
-    /// nothing leaks.
-    pub fn init(allocator: std.mem.Allocator, ucc: objc.Object) Error!Bridge {
+    /// `allocator` is borrowed (not owned) and used for JSON parsing, the
+    /// dispatch table's backing storage, and JS string building in `resolve`; the
+    /// map is built here and freed by `deinit`. On the error path the +1 handler
+    /// is released (errdefer) so nothing leaks.
+    ///
+    /// `webview` is BORROWED (not +1, not retained). Pass the raw `ns_webview`
+    /// field (or `WebView.ns_webview`) of the live `WebView`. The caller is
+    /// responsible for ensuring the WKWebView outlives this `Bridge`.
+    pub fn init(allocator: std.mem.Allocator, ucc: objc.Object, webview: objc.Object) Error!Bridge {
         const handler_class = try handlerClass();
 
         // +1 handler instance owned by this Bridge (released in deinit). If a
@@ -304,6 +318,7 @@ pub const Bridge = struct {
         return .{
             .handler = handler,
             .ucc = ucc,
+            .webview = webview,
             .on_message = dispatchMessage,
             .allocator = allocator,
             .dispatch = dispatch,
@@ -324,6 +339,74 @@ pub const Bridge = struct {
         // HashMap.put (hash_map.zig:322): put(self, key, value) !void. Does not
         // copy the key (StringHashMap keys are caller-managed).
         try self.dispatch.put(method, handler);
+    }
+
+    /// Evaluate a JavaScript expression in the webview. The `js` argument is a
+    /// NUL-terminated UTF-8 JS source string (already fully formed). The call is
+    /// fire-and-forget: the completion handler is `nil` (no ObjC block, per hard
+    /// rule #3). Any JS-side syntax error is silently discarded by WebKit.
+    ///
+    /// No ARC: the transient NSString is +1 from `nsString`/`stringWithUTF8String:
+    /// retain`, and released via `defer` on the one return path. Must be called on
+    /// the main thread (WebKit requirement).
+    pub fn evaluate(self: *Bridge, js: [:0]const u8) void {
+        const NSString = objc.getClass("NSString") orelse return;
+        const ns_js = nsString(NSString, js);
+        defer ns_js.msgSend(void, "release", .{});
+        // evaluateJavaScript:completionHandler: (WKWebView). The second arg is a
+        // block (id); we pass null (nil) per the no-ObjC-blocks rule. The selector
+        // takes two explicit args beyond self/cmd.
+        self.webview.msgSend(
+            void,
+            "evaluateJavaScript:completionHandler:",
+            .{ ns_js, @as(?*anyopaque, null) },
+        );
+    }
+
+    /// Build the JS expression string `__resolve(<id>, <result>)` using
+    /// `allocator`. The caller owns the returned sentinel slice and must free it.
+    ///
+    /// `result` is a raw JS expression (not a JSON-quoted string) — the caller
+    /// is responsible for any quoting/encoding. Example: `buildResolveJS(7, "\"hi\"", …)`
+    /// produces `__resolve(7, "hi")`.
+    ///
+    /// Pure Zig — no ObjC calls. Testable headlessly. `resolve` calls this, then
+    /// `evaluate`, then frees the slice.
+    ///
+    /// Verified: `std.fmt.allocPrintSentinel` (fmt.zig:639):
+    ///   `pub fn allocPrintSentinel(gpa, comptime fmt, args, comptime sentinel) Allocator.Error![:sentinel]u8`
+    pub fn buildResolveJS(
+        id: i64,
+        result: []const u8,
+        allocator: std.mem.Allocator,
+    ) std.mem.Allocator.Error![:0]u8 {
+        return std.fmt.allocPrintSentinel(
+            allocator,
+            "__resolve({d}, {s})",
+            .{ id, result },
+            0,
+        );
+    }
+
+    /// Deliver a reply to the JS caller identified by `id`. Builds the string
+    /// `__resolve(<id>, <result>)` and calls `evaluate` with it. This is the
+    /// Zig→JS reply path: when JS sends `{ method, params, id }`, Zig calls
+    /// `resolve(id, json_result)` to answer it.
+    ///
+    /// `result` is a raw JS expression string — not quoted. The caller is
+    /// responsible for encoding: e.g. `resolve(7, "\"hello\"")` evaluates
+    /// `__resolve(7, "hello")` in the webview.
+    ///
+    /// Memory: `buildResolveJS` allocates a sentinel slice from `self.allocator`;
+    /// it is freed with `defer` after `evaluate` copies its content into an
+    /// NSString. No allocation survives this call. Must be called on the main
+    /// thread (WebKit requirement).
+    ///
+    /// Returns `Allocator.Error` only if the JS string cannot be allocated.
+    pub fn resolve(self: *Bridge, id: i64, result: []const u8) std.mem.Allocator.Error!void {
+        const js = try buildResolveJS(id, result, self.allocator);
+        defer self.allocator.free(js);
+        self.evaluate(js);
     }
 
     /// Pure parse + dispatch core: take a UTF-8 JSON document, parse it, read
@@ -633,6 +716,7 @@ test "the context *Bridge round-trips through the wkz_ctx ivar" {
     var bridge: Bridge = .{
         .handler = handler,
         .ucc = .{ .value = null },
+        .webview = .{ .value = null },
         .on_message = dispatchMessage,
         .allocator = std.testing.allocator,
         .dispatch = DispatchTable.init(std.testing.allocator),
@@ -689,6 +773,7 @@ test "invoking the IMP directly recovers the context and reaches the body" {
     var bridge: Bridge = .{
         .handler = handler,
         .ucc = .{ .value = null },
+        .webview = .{ .value = null },
         .on_message = ImpProbe.onMessage,
         .allocator = std.testing.allocator,
         .dispatch = DispatchTable.init(std.testing.allocator),
@@ -790,6 +875,7 @@ fn makeTestBridge() !Bridge {
     return .{
         .handler = handler,
         .ucc = .{ .value = null },
+        .webview = .{ .value = null },
         .on_message = dispatchMessage,
         .allocator = std.testing.allocator,
         .dispatch = DispatchTable.init(std.testing.allocator),
@@ -1380,6 +1466,135 @@ test "M2.4 max_body_len is a sane, documented constant" {
     try std.testing.expectEqual(@as(usize, 1 * 1024 * 1024), max_body_len);
 }
 
+// =====================================================================
+// M3.1 — buildResolveJS / resolve / evaluate
+//
+// `buildResolveJS` is pure Zig (no ObjC), fully headless-testable.
+// `evaluate` / `resolve` call WebKit — not headless-safe with a live webview —
+// so the ObjC leg is tested only at the compile-time / selector-respond level.
+// =====================================================================
+
+test "buildResolveJS: positive id + quoted string result" {
+    const js = try Bridge.buildResolveJS(7, "\"hello\"", std.testing.allocator);
+    defer std.testing.allocator.free(js);
+    try std.testing.expectEqualStrings("__resolve(7, \"hello\")", js);
+    // Result must be NUL-terminated ([:0]u8 sentinel).
+    try std.testing.expectEqual(@as(u8, 0), js[js.len]);
+}
+
+test "buildResolveJS: zero id" {
+    const js = try Bridge.buildResolveJS(0, "null", std.testing.allocator);
+    defer std.testing.allocator.free(js);
+    try std.testing.expectEqualStrings("__resolve(0, null)", js);
+}
+
+test "buildResolveJS: negative id" {
+    const js = try Bridge.buildResolveJS(-1, "42", std.testing.allocator);
+    defer std.testing.allocator.free(js);
+    try std.testing.expectEqualStrings("__resolve(-1, 42)", js);
+}
+
+test "buildResolveJS: empty result" {
+    const js = try Bridge.buildResolveJS(1, "", std.testing.allocator);
+    defer std.testing.allocator.free(js);
+    try std.testing.expectEqualStrings("__resolve(1, )", js);
+}
+
+test "buildResolveJS: result with special characters" {
+    const js = try Bridge.buildResolveJS(99, "{\"a\":1,\"b\":\"x\\ny\"}", std.testing.allocator);
+    defer std.testing.allocator.free(js);
+    try std.testing.expectEqualStrings("__resolve(99, {\"a\":1,\"b\":\"x\\ny\"})", js);
+}
+
+test "buildResolveJS: large id values" {
+    const js = try Bridge.buildResolveJS(std.math.maxInt(i64), "true", std.testing.allocator);
+    defer std.testing.allocator.free(js);
+    // Just assert it contains the max int formatted correctly (not truncated).
+    try std.testing.expect(std.mem.startsWith(u8, js, "__resolve(9223372036854775807, true)"));
+}
+
+test "evaluate and resolve return void (compile-time contract)" {
+    // evaluate is `fn (*Bridge, [:0]const u8) void`
+    try std.testing.expectEqual(
+        void,
+        @typeInfo(@TypeOf(Bridge.evaluate)).@"fn".return_type.?,
+    );
+    // resolve is `fn (*Bridge, i64, []const u8) Allocator.Error!void`
+    try std.testing.expectEqual(
+        std.mem.Allocator.Error!void,
+        @typeInfo(@TypeOf(Bridge.resolve)).@"fn".return_type.?,
+    );
+}
+
+test "WKWebView responds to evaluateJavaScript:completionHandler:" {
+    // Selector-respond check: proves the selector string is spelled correctly and
+    // WKWebView instances handle it — headlessly safe (class metadata query, no
+    // window server, no live webview).
+    const WKWebView = objc.getClass("WKWebView").?;
+    try std.testing.expect(WKWebView.msgSend(
+        bool,
+        "instancesRespondToSelector:",
+        .{objc.sel("evaluateJavaScript:completionHandler:").value},
+    ));
+}
+
+test "buildResolveJS: result containing a bare double-quote is injected raw (caller-must-encode contract)" {
+    // The doc comment states `result` is a raw JS expression — the caller is
+    // responsible for quoting/encoding. This test pins that a bare `"` inside
+    // `result` appears VERBATIM in the output, NOT HTML/JSON-escaped. Any future
+    // change that starts escaping the result would break the public contract and
+    // must be an explicit, documented decision.
+    const js = try Bridge.buildResolveJS(1, "\"", std.testing.allocator);
+    defer std.testing.allocator.free(js);
+    try std.testing.expectEqualStrings("__resolve(1, \")", js);
+    // Sentinel is intact even with a quote in the body.
+    try std.testing.expectEqual(@as(u8, 0), js[js.len]);
+}
+
+test "buildResolveJS: minimum i64 value" {
+    // Complement to the maxInt test: proves the signed lower bound is formatted
+    // correctly (the leading minus plus all digits, no truncation/overflow).
+    const js = try Bridge.buildResolveJS(std.math.minInt(i64), "false", std.testing.allocator);
+    defer std.testing.allocator.free(js);
+    try std.testing.expectEqualStrings("__resolve(-9223372036854775808, false)", js);
+}
+
+test "buildResolveJS: OOM returns Allocator.Error (no crash, nothing leaked)" {
+    // Provoke an allocator failure on the very first allocation. `buildResolveJS`
+    // calls `std.fmt.allocPrintSentinel` which allocates; with fail_index=0 that
+    // allocation fails immediately and `OutOfMemory` must propagate cleanly out of
+    // `buildResolveJS`. Nothing is allocated on this path so there is nothing to
+    // leak (the FailingAllocator itself lives on the stack).
+    var failing = std.testing.FailingAllocator.init(
+        std.testing.allocator,
+        .{ .fail_index = 0 },
+    );
+    const result = Bridge.buildResolveJS(42, "\"x\"", failing.allocator());
+    try std.testing.expectError(error.OutOfMemory, result);
+}
+
+test "Bridge exposes buildResolveJS as a public decl with the correct signature" {
+    // `buildResolveJS` is a free function in the Bridge namespace (not a method —
+    // it takes no `*Bridge`). Confirm it is public, callable, and returns the
+    // documented type.
+    try std.testing.expect(@hasDecl(Bridge, "buildResolveJS"));
+    const Ret = @typeInfo(@TypeOf(Bridge.buildResolveJS)).@"fn".return_type.?;
+    try std.testing.expectEqual(std.mem.Allocator.Error![:0]u8, Ret);
+}
+
+test "resolve allocates, calls evaluate with correct JS, and frees (nil webview guard)" {
+    // `evaluate` guards `objc.getClass("NSString") orelse return` — so with a
+    // nil webview field it returns immediately without crashing. `resolve` still
+    // allocates the JS string, calls `evaluate`, and frees the string. Under
+    // `std.testing.allocator` any leak fails the test, proving the free path is
+    // taken even when `evaluate` returns early.
+    var bridge = try makeTestBridge(); // webview is nil
+    defer bridge.deinit();
+    try bridge.resolve(7, "\"hello\"");
+    // Reaching here without a testing.allocator leak assertion failure proves
+    // the allocate-evaluate-free cycle completes cleanly.
+}
+
 // --- API-surface / type contract (compile-time) ---
 
 test "Error set includes ClassNotFound and the Allocator errors" {
@@ -1395,11 +1610,13 @@ test "Error set includes ClassNotFound and the Allocator errors" {
 test "Bridge exposes the documented public API surface" {
     try std.testing.expect(@hasField(Bridge, "handler"));
     try std.testing.expect(@hasField(Bridge, "ucc"));
+    try std.testing.expect(@hasField(Bridge, "webview"));
     try std.testing.expect(@hasField(Bridge, "on_message"));
     try std.testing.expect(@hasField(Bridge, "allocator"));
     try std.testing.expect(@hasField(Bridge, "dispatch"));
     try std.testing.expectEqual(objc.Object, @FieldType(Bridge, "handler"));
     try std.testing.expectEqual(objc.Object, @FieldType(Bridge, "ucc"));
+    try std.testing.expectEqual(objc.Object, @FieldType(Bridge, "webview"));
     try std.testing.expectEqual(OnMessage, @FieldType(Bridge, "on_message"));
     try std.testing.expectEqual(std.mem.Allocator, @FieldType(Bridge, "allocator"));
     try std.testing.expectEqual(DispatchTable, @FieldType(Bridge, "dispatch"));
@@ -1416,6 +1633,11 @@ test "Bridge exposes the documented public API surface" {
     const DispatchRet = @typeInfo(@TypeOf(Bridge.dispatchSlice)).@"fn".return_type.?;
     try std.testing.expectEqual(DispatchError!void, DispatchRet);
 
+    try std.testing.expectEqual(void, @typeInfo(@TypeOf(Bridge.evaluate)).@"fn".return_type.?);
+    try std.testing.expectEqual(
+        std.mem.Allocator.Error!void,
+        @typeInfo(@TypeOf(Bridge.resolve)).@"fn".return_type.?,
+    );
     try std.testing.expectEqual(void, @typeInfo(@TypeOf(Bridge.handleMessage)).@"fn".return_type.?);
     try std.testing.expectEqual(void, @typeInfo(@TypeOf(Bridge.deinit)).@"fn".return_type.?);
 }

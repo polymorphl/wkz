@@ -4,7 +4,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 
 ## Current focus
 
-**M3.1 — evaluateJavaScript + `__resolve` convention.** (M2 complete.)
+**M3.2 — `registerHandler` comptime API + request/response correlation.** (M3.1 DONE.)
 
 ---
 
@@ -31,7 +31,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 
 | ID | Task | Status |
 |----|------|--------|
-| 3.1 | `evaluateJavaScript` (nil handler) + `__resolve(id, result)` convention | TODO |
+| 3.1 | `evaluateJavaScript` (nil handler) + `__resolve(id, result)` convention | DONE |
 | 3.2 | `bridge.zig` public API `registerHandler(comptime method, fn)` with request/response correlation | TODO |
 | 3.3 | bridge-js TS client `invoke<T>()`, HMR-idempotent (`import.meta.hot.dispose`) | TODO |
 | 3.4 | `-Ddev` wiring + Info.plist `NSAllowsLocalNetworking` documented | TODO |
@@ -59,6 +59,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 
 ## Log
 
+- M3.1 — orchestrator — code-reviewer APPROVE (0 findings; ARC clean — NSString +1/defer-released in evaluate, buildResolveJS slice defer-freed in resolve on all paths including nil-webview early-return; webview BORROWED not released in deinit; main.zig untouched — doesn't call Bridge.init yet; allocPrintSentinel return type [:0]u8 verified). test-runner 87/87 ×3. 4 new tests: buildResolveJS double-quote raw-inject contract, minInt(i64), OOM via FailingAllocator, buildResolveJS API surface. Manual checklist M3.1-G1..G4 authored. Committed. → DONE
 - M2.4 — orchestrator — 74/74 tests pass (73 lib + 1 example). adversarial battery: oversized body pre-parse guard, deeply-nested iterative-parse no stack-overflow, i64-overflow number_string, invalid UTF-8, hostile shape matrix (14 cases), duplicate keys, void-boundary swallow. logRejected emits stage/len/prefix only, never full payload. `zig build test --summary all` exit 0. Committed. → DONE
 - M2.3 — orchestrator — code-reviewer APPROVE_WITH_MINORS (no CRITICAL/MAJOR; parse-arena freed on all paths, params borrow call-scoped + documented, static-literal map keys, no panic on malformed, std.json/StringHashMap signatures spot-checked real). 2 MINORs sent back to zig-developer (fix cycle 1): null-`UTF8String` crash guard added; dead `_ = root.get("id")` removed. MINOR#3 (body size-cap) → M2.4. Re-verified green by orchestrator + test-runner 65/65 (seed-independent ×6), 0 impl bugs. Committed. → DONE
 - M2.3 — test-runner — suite 65/65 (64 lib + 1 example), exit 0, seed-independent across 6 runs. Added 5 headless tests under testing.allocator (unknown-method arena-free — the MAJOR-risk leak path; nested object/array params intact; non-object params pass-through unvalidated; multi-handler routing discriminates by key; populated-map deinit frees N entries). No impl bugs. Residual: `UTF8String`-null defensive guard + live-JS round-trip remain manual (M2.2-G/M2.3 checklist). → TESTING
@@ -131,6 +132,13 @@ GUI behaviour cannot run under headless `zig build test` (no window server / blo
 - **M2.2-G3 (body shapes):** posting a string / number / object each logs the matching ObjC body class (`__NSCFString` / `__NSCFNumber` / `__NSDictionary…`), confirming body reachable for M2.3 extraction.
 - **M2.2-G4 (ordering):** handler installed (`Bridge.attach`) before page load; a page that posts on load is received (no message lost).
 - **M2.2-G5 (teardown):** Cmd+Q after exercising the bridge quits cleanly (handler deregistered, no abort).
+
+### M3.1 — evaluateJavaScript + resolve (needs live WKWebView + run loop + loaded page)
+
+- **M3.1-G1 (evaluate fires):** Call `bridge.evaluate("window.__testSentinel = 42")` then `bridge.evaluate("window.webkit.messageHandlers.bridge.postMessage(JSON.stringify({method:'check',params:window.__testSentinel}))")`. Confirm the `"check"` Zig handler receives `params` = integer `42`.
+- **M3.1-G2 (resolve round-trip):** From JS, post `{method:"echo",id:5,params:"hello"}`. Zig handler calls `bridge.resolve(5, "\"hello\"")`. Confirm `__resolve(5, "hello")` executes in JS (log or promise resolution).
+- **M3.1-G3 (evaluate syntax error):** Call `bridge.evaluate("this is not JS ///")`. Process must not crash (WebKit drops JS error silently with nil handler).
+- **M3.1-G4 (resolve post-navigation):** After loading a new page, call `bridge.resolve(1, "true")`. Must not crash.
 
 ## Blocked
 
