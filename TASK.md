@@ -4,7 +4,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 
 ## Current focus
 
-**M1.2 — `app.zig` NSApplication bootstrap.** (M1.1 scaffold is DONE.)
+**M1.3 — `window.zig` NSWindow.** (M1.1, M1.2 DONE.)
 
 ---
 
@@ -13,7 +13,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 | ID | Task | Status |
 |----|------|--------|
 | 1.1 | Scaffold green: build.zig (wkz module + example, frameworks, `-Ddev`, test step), src stubs, zig-objc pinned, Vite + bridge-js, gitignore/README/CI | DONE |
-| 1.2 | `app.zig` NSApplication bootstrap, activation policy `.regular`, menu with Cmd+Q | TODO |
+| 1.2 | `app.zig` NSApplication bootstrap, activation policy `.regular`, menu with Cmd+Q | DONE |
 | 1.3 | `window.zig` NSWindow titled/closable/resizable, centered, makeKeyAndOrderFront | TODO |
 | 1.4 | `webview.zig` WKWebView filling contentView, loadHTMLString inline page, inspectable=true | TODO |
 | 1.5 | Example in `main.zig`; `zig build run` opens a window | TODO |
@@ -59,12 +59,25 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 
 ## Log
 
+- M1.2 — orchestrator — code-reviewer APPROVE (no findings; retain counts traced, zig-objc calls verified). Working tree integrity re-verified after test-runner's `git checkout` incident (impl + tests intact). `zig build` + `zig build test` green (14/14). Committed. → DONE
+- M1.2 — test-runner — added 6 headless tests to `src/app.zig` (Error-set shape, public API/type contract, AppKit class + `terminate:` selector resolution, and a live `init()` test asserting the NSApp singleton is non-nil, idempotent, and that the installed main menu carries a single "Quit" item bound to `terminate:`/key "q"). Empirically probed that `init()`/`activate()` are headless-safe (run + return, no window server); `run()` excluded as it blocks the run loop. `zig build` + `zig build test` green: 14/14 (13 lib + 1 exe), stable across 3 runs. GUI behaviour (Dock icon, foregrounding, Cmd+Q termination) deferred to the M1.5 manual checklist below. → TESTING
+- M1.2 — zig-developer — implemented `src/app.zig`: `App.init()` obtains `+[NSApplication sharedApplication]`, sets activation policy `.regular` (NSApplicationActivationPolicyRegular = 0), and installs a main menu with a Quit item bound to Cmd+Q (`terminate:`, key "q"). Added `App.run()` ([NSApp run]) and `App.activate()`. All transient menu/NSString objects released after AppKit retains them (no ARC). `zig build` + `zig build test` green. → IN_REVIEW
 - M1.1 — orchestrator — scaffold created: build.zig (wkz module + example exe, AppKit/WebKit/Foundation/libobjc, `-Ddev` via build_options, test step), 7 src stubs (doc comment + refAllDecls), zig-objc pinned at `c8de82f`, Vite vanilla-ts frontend, `@wkz/bridge` TS stub, .gitignore/README/CI. `zig build` + `zig build test` green. → DONE
 
 ## Decisions
 
 - **zig-objc ref**: pinned to commit `c8de82ff80281215ad92900866dab7103a8efa8b` (main HEAD, 2026-04-17). This is the first line that includes "Add Zig 0.16 compatibility" (`fd36c1c`) + the 0.16 translate-c bug fix (`41ea96c`); no 0.16-tagged release exists, so pin by hash rather than `master`.
 - **`src/root.zig` added** as the public API aggregator (not in the original architecture list). Idiomatic Zig module root; re-exports app/window/webview/bridge and keeps scheme/objc_helpers internal but in the test graph.
+
+## Manual GUI checklist
+
+GUI behaviour cannot run under headless `zig build test` (no window server / blocking run loop). Verify by hand once an example calls `App.run()` (lands in M1.5):
+
+- **M1.2-G1 (launch):** `zig build run -Ddev=true` starts without crashing and the process stays alive (run loop blocks, does not return immediately).
+- **M1.2-G2 (regular app):** app appears in the Dock with an icon and owns the menu bar (activation policy `.regular`). It is not an `.accessory`/background agent.
+- **M1.2-G3 (foreground):** if `activate()` is called before `run()`, the app comes to the foreground / becomes the active app on launch.
+- **M1.2-G4 (menu):** the app menu (leftmost, bold) contains a single **Quit** item.
+- **M1.2-G5 (Cmd+Q):** pressing **Cmd+Q** (or clicking Quit) fires `terminate:` and the process exits cleanly (the `zig build run` command returns).
 
 ## Blocked
 
