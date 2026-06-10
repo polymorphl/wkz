@@ -1,17 +1,313 @@
 //! WKWebView creation, configuration, and content loading.
 //!
-//! Responsibility: build a WKWebView filling the window's content view, attach
-//! the WKWebViewConfiguration (user content controller, scheme handler), set
-//! inspectable=true, and load content — loadHTMLString / loadRequest (dev) /
-//! app:// scheme (prod). Main thread only; release paired on deinit.
-//!
-//! M1.1 scaffold: no implementation yet (lands in M1.4).
+//! Responsibility: build a WKWebView (with a WKWebViewConfiguration), add it as
+//! a subview of an existing window's contentView sized to fill it (and to keep
+//! filling on resize), enable the Web Inspector (`inspectable = true`), and load
+//! content — `loadHTMLString:baseURL:` for inline HTML here; loadRequest (dev)
+//! and the app:// scheme (prod) land later. Main thread only; release paired in
+//! `deinit`. No ARC.
 
 const std = @import("std");
 const objc = @import("objc");
+const win = @import("window.zig");
 
-comptime {
-    _ = objc;
+/// Core Graphics geometry, shared from window.zig so there is one canonical
+/// CGRect/CGFloat ABI across the project rather than a duplicate definition.
+const CGFloat = win.CGFloat;
+const CGRect = win.CGRect;
+
+/// `NSAutoresizingMaskOptions` flag values (AppKit/NSView.h). Stable since 10.0.
+/// `Width|HeightSizable` makes the webview grow/shrink with its superview so it
+/// keeps filling the contentView when the window is resized.
+const NSViewWidthSizable: c_ulong = 1 << 1; // 2
+const NSViewHeightSizable: c_ulong = 1 << 4; // 16
+
+/// `CGRect`/`NSRect` of zero origin and size. The initial frame is irrelevant:
+/// `attach` overwrites it with the contentView's bounds before display.
+const CGRectZero: CGRect = .{
+    .origin = .{ .x = 0, .y = 0 },
+    .size = .{ .width = 0, .height = 0 },
+};
+
+/// Errors surfaced while creating a webview.
+pub const Error = error{
+    /// A required WebKit/Foundation class could not be looked up in the runtime.
+    /// This only happens if WebKit failed to link/load, which is fatal.
+    ClassNotFound,
+};
+
+/// A WKWebView attached to (and filling) a window's contentView.
+///
+/// Ownership: `init` produces a `+1` WKWebView reference (alloc/init) that this
+/// struct owns; `deinit` releases it. The transient WKWebViewConfiguration is
+/// also `+1` from alloc/init — `initWithFrame:configuration:` makes WKWebView
+/// retain it, so `init` releases its own configuration reference before
+/// returning, leaving exactly one owned reference (the webview). Adding the
+/// webview as a subview makes the superview retain it too, so the webview
+/// survives until both that retain is dropped (on view/window teardown) and our
+/// `deinit` release runs. No ARC: the single owning reference is balanced by the
+/// one `release` in `deinit`.
+pub const WebView = struct {
+    /// The owned `WKWebView` (`+1`). Released by `deinit`.
+    ns_webview: objc.Object,
+
+    /// Create a WKWebView with a fresh WKWebViewConfiguration and enable the
+    /// Web Inspector. The webview is not attached to any window yet — call
+    /// `attach` to add it to a window's contentView.
+    ///
+    /// Must be called on the main thread. On success the returned `WebView` owns
+    /// a `+1` WKWebView reference that `deinit` releases. On the error path no
+    /// reference is leaked.
+    pub fn init() Error!WebView {
+        const WKWebView = objc.getClass("WKWebView") orelse return Error.ClassNotFound;
+        const WKWebViewConfiguration = objc.getClass("WKWebViewConfiguration") orelse
+            return Error.ClassNotFound;
+
+        // +1 configuration; consumed (retained) by initWithFrame:configuration:.
+        // We release our own reference once the webview holds its own.
+        const config = WKWebViewConfiguration.msgSend(objc.Object, "alloc", .{})
+            .msgSend(objc.Object, "init", .{});
+        defer config.msgSend(void, "release", .{});
+
+        // alloc/init -> +1 reference owned by this struct (released in deinit).
+        // CGRectZero is fine: attach() resizes to the contentView bounds.
+        const ns_webview = WKWebView.msgSend(objc.Object, "alloc", .{})
+            .msgSend(objc.Object, "initWithFrame:configuration:", .{ CGRectZero, config });
+        errdefer ns_webview.msgSend(void, "release", .{});
+
+        // Enable the Web Inspector (macOS 13.3+). setInspectable: takes a BOOL.
+        ns_webview.msgSend(void, "setInspectable:", .{@as(bool, true)});
+
+        return .{ .ns_webview = ns_webview };
+    }
+
+    /// Add the webview to `window`'s contentView, sized to fill it and set to
+    /// keep filling on resize (width|height autoresizing). The contentView
+    /// retains the webview when it is added; we still own our `+1` reference
+    /// (released in `deinit`). Must be called on the main thread.
+    pub fn attach(self: WebView, window: win.Window) void {
+        const content_view = window.contentView();
+
+        // Match the webview's frame to the contentView's current bounds, then
+        // let the autoresizing mask keep it filling as the window resizes.
+        const bounds: CGRect = content_view.msgSend(CGRect, "bounds", .{});
+        self.ns_webview.msgSend(void, "setFrame:", .{bounds});
+        self.ns_webview.msgSend(
+            void,
+            "setAutoresizingMask:",
+            .{NSViewWidthSizable | NSViewHeightSizable},
+        );
+
+        // contentView retains the webview as a subview.
+        content_view.msgSend(void, "addSubview:", .{self.ns_webview});
+    }
+
+    /// Load an inline HTML page via `-[WKWebView loadHTMLString:baseURL:]`.
+    /// `base_url` is passed as nil (no relative-URL resolution base), which is
+    /// fine for self-contained HTML. The HTML NSString is built transiently and
+    /// released after the load is requested (WKWebView copies what it needs).
+    /// Must be called on the main thread.
+    pub fn loadHTMLString(self: WebView, html: [:0]const u8) Error!void {
+        const NSString = objc.getClass("NSString") orelse return Error.ClassNotFound;
+        const ns_html = nsString(NSString, html);
+        defer ns_html.msgSend(void, "release", .{});
+        self.ns_webview.msgSend(
+            void,
+            "loadHTMLString:baseURL:",
+            .{ ns_html, @as(?*anyopaque, null) },
+        );
+    }
+
+    /// Release the owned WKWebView reference. After this the `WebView` is dead.
+    /// Must be called on the main thread.
+    pub fn deinit(self: WebView) void {
+        self.ns_webview.msgSend(void, "release", .{});
+    }
+};
+
+/// Returns a `+1` NSString built from a UTF-8 C string. Caller owns it and must
+/// `release` it. `-[NSString stringWithUTF8String:]` returns an autoreleased
+/// string; since wkz drains no autorelease pool here, we `retain` it to get a
+/// deterministic, ARC-free `+1` reference the caller releases explicitly.
+fn nsString(NSString: objc.Class, str: [:0]const u8) objc.Object {
+    const s = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{str.ptr});
+    return s.msgSend(objc.Object, "retain", .{});
+}
+
+// --- Compile-time constant / layout contracts (no WebKit calls) ---
+
+test "autoresizing mask constants match AppKit" {
+    try std.testing.expectEqual(@as(c_ulong, 2), NSViewWidthSizable);
+    try std.testing.expectEqual(@as(c_ulong, 16), NSViewHeightSizable);
+}
+
+test "CGRect shared from window.zig has the expected ABI layout" {
+    // webview.zig passes CGRect by value (initWithFrame:/setFrame:) and reads it
+    // back (bounds/frame). Re-asserting the shared type's layout guards against a
+    // future edit to window.zig silently breaking the webview ABI.
+    try std.testing.expectEqual(@as(usize, 32), @sizeOf(CGRect));
+    try std.testing.expectEqual(f64, CGFloat);
+    try std.testing.expectEqual(
+        std.builtin.Type.ContainerLayout.@"extern",
+        @typeInfo(CGRect).@"struct".layout,
+    );
+}
+
+// --- API-surface / type contract (compile-time) ---
+
+test "WebView exposes the documented public API surface" {
+    try std.testing.expect(@hasField(WebView, "ns_webview"));
+    try std.testing.expectEqual(objc.Object, @FieldType(WebView, "ns_webview"));
+
+    const InitRet = @typeInfo(@TypeOf(WebView.init)).@"fn".return_type.?;
+    try std.testing.expectEqual(Error!WebView, InitRet);
+
+    try std.testing.expectEqual(void, @typeInfo(@TypeOf(WebView.attach)).@"fn".return_type.?);
+
+    const LoadRet = @typeInfo(@TypeOf(WebView.loadHTMLString)).@"fn".return_type.?;
+    try std.testing.expectEqual(Error!void, LoadRet);
+
+    try std.testing.expectEqual(void, @typeInfo(@TypeOf(WebView.deinit)).@"fn".return_type.?);
+}
+
+test "Error set is exactly {ClassNotFound}" {
+    const fields = @typeInfo(Error).error_set.?;
+    try std.testing.expectEqual(@as(usize, 1), fields.len);
+    try std.testing.expectEqualStrings("ClassNotFound", fields[0].name);
+}
+
+test "required WebKit/Foundation classes resolve in the runtime" {
+    // Pure runtime lookups — no window-server connection, safe headless.
+    try std.testing.expect(objc.getClass("WKWebView") != null);
+    try std.testing.expect(objc.getClass("WKWebViewConfiguration") != null);
+    try std.testing.expect(objc.getClass("NSString") != null);
+}
+
+test "WKWebView/WKWebViewConfiguration respond to the selectors used" {
+    // Query loaded class metadata for the instance methods init()/attach()/
+    // loadHTMLString() send. Pure runtime lookups against the class objects —
+    // they allocate no view and open no window-server connection, so they are
+    // headless-safe. A typo in a selector string would otherwise only surface as
+    // a silent no-op or crash on a real view.
+    const WKWebView = objc.getClass("WKWebView").?;
+    const wk_selectors = [_][:0]const u8{
+        "initWithFrame:configuration:",
+        "setInspectable:",
+        "setFrame:",
+        "setAutoresizingMask:",
+        "loadHTMLString:baseURL:",
+        // attach() sends addSubview: to the contentView with the webview as the
+        // argument; WKWebView (an NSView subclass) also responds to bounds, which
+        // attach() reads off the contentView. Asserting WKWebView responds to both
+        // documents the NSView surface attach() relies on without needing a window.
+        "addSubview:",
+        "bounds",
+        "release",
+    };
+    inline for (wk_selectors) |name| {
+        try std.testing.expect(WKWebView.msgSend(
+            bool,
+            "instancesRespondToSelector:",
+            .{objc.sel(name).value},
+        ));
+    }
+
+    const WKWebViewConfiguration = objc.getClass("WKWebViewConfiguration").?;
+    try std.testing.expect(WKWebViewConfiguration.msgSend(
+        bool,
+        "instancesRespondToSelector:",
+        .{objc.sel("init").value},
+    ));
+}
+
+// --- Live instantiation (empirically headless-safe: WKWebViewConfiguration
+//     alloc/init, WKWebView initWithFrame:configuration:, setInspectable:, and
+//     the frame CGRect-by-value return all complete without a window server;
+//     probed before writing this test) ---
+
+test "init() builds a live WKWebView and deinit() releases it" {
+    // WKWebViewConfiguration alloc/init and WKWebView initWithFrame:configuration:
+    // were verified to run headless (no window server) before adding this. We do
+    // NOT call attach() here: it needs a real window's contentView (NSWindow
+    // creation is not headless-safe — see window.zig and the manual checklist).
+    const wv = WebView.init() catch |e| {
+        std.debug.print("WebView.init() failed: {s}\n", .{@errorName(e)});
+        return e;
+    };
+    defer wv.deinit();
+
+    try std.testing.expect(wv.ns_webview.value != null);
+
+    // The handle is a genuine WKWebView instance.
+    try std.testing.expect(wv.ns_webview.msgSend(
+        bool,
+        "isKindOfClass:",
+        .{objc.getClass("WKWebView").?},
+    ));
+
+    // setInspectable:(true) ran in init(); read it back via -[isInspectable].
+    try std.testing.expect(wv.ns_webview.msgSend(bool, "isInspectable", .{}));
+
+    // The frame CGRect getter returns by value (arm64 plain objc_msgSend); the
+    // CGRectZero frame from init() must round-trip as zero.
+    const frame: CGRect = wv.ns_webview.msgSend(CGRect, "frame", .{});
+    try std.testing.expectEqual(@as(CGFloat, 0), frame.size.width);
+    try std.testing.expectEqual(@as(CGFloat, 0), frame.size.height);
+}
+
+test "loadHTMLString() runs headless on a live WKWebView" {
+    // loadHTMLString:baseURL: with a nil baseURL kicks off an async load on the
+    // webview's process pool; it returns immediately and is safe headless (no
+    // window server, no run loop pumped here). We only assert it does not crash
+    // and the NSString plumbing is sound.
+    const wv = try WebView.init();
+    defer wv.deinit();
+
+    try wv.loadHTMLString("<!doctype html><title>wkz</title><h1>hi</h1>");
+}
+
+test "nsString round-trips UTF-8 content (the plumbing loadHTMLString relies on)" {
+    // loadHTMLString() only asserts no-crash; it cannot read the WKWebView's
+    // loaded DOM headless. So exercise the helper it depends on directly: build a
+    // +1 NSString from a known UTF-8 payload (incl. multibyte) and assert the
+    // bytes survive the stringWithUTF8String:/retain round-trip. Guards against
+    // the helper silently truncating or mangling the HTML before it reaches
+    // WebKit. Pure Foundation, headless-safe.
+    const NSString = objc.getClass("NSString").?;
+    const payload: [:0]const u8 = "<h1>héllo • wkz</h1>";
+    const s = nsString(NSString, payload);
+    defer s.msgSend(void, "release", .{});
+
+    try std.testing.expect(s.value != null);
+    const back = s.msgSend([*:0]const u8, "UTF8String", .{});
+    try std.testing.expectEqualStrings(payload, std.mem.span(back));
+}
+
+test "loadHTMLString() tolerates adversarial input headless" {
+    // Adversarial bias: hostile HTML strings must not crash the loader or the
+    // NSString plumbing. Empty input, a lone NUL-terminated empty body, and a
+    // payload whose bytes are invalid UTF-8 all go through loadHTMLString().
+    // +[NSString stringWithUTF8String:] returns nil on invalid UTF-8; -[retain]
+    // on nil is a safe no-op, and -[WKWebView loadHTMLString:baseURL:] with a nil
+    // string is likewise a safe no-op — so the contract is "returns without
+    // crashing", which is what we assert here.
+    const wv = try WebView.init();
+    defer wv.deinit();
+
+    // Empty string.
+    try wv.loadHTMLString("");
+
+    // Invalid UTF-8: 0xFF/0xFE are never valid UTF-8 lead bytes. The slice is
+    // NUL-terminated so it satisfies the [:0]const u8 contract; the bytes before
+    // the NUL are the hostile payload.
+    const bad = [_:0]u8{ 0xff, 0xfe, 0xc0 };
+    try wv.loadHTMLString(&bad);
+
+    // A large but well-formed payload (oversized-ish): 64 KiB of valid HTML body.
+    const big = try std.testing.allocator.allocSentinel(u8, 64 * 1024, 0);
+    defer std.testing.allocator.free(big);
+    @memset(big, 'a');
+    try wv.loadHTMLString(big);
 }
 
 test {

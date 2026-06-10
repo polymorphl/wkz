@@ -4,7 +4,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 
 ## Current focus
 
-**M1.4 — `webview.zig` WKWebView.** (M1.1, M1.2, M1.3 DONE.)
+**M1.5 — example in `main.zig`; `zig build run` opens a window.** (M1.1–M1.4 DONE.)
 
 ---
 
@@ -15,7 +15,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 | 1.1 | Scaffold green: build.zig (wkz module + example, frameworks, `-Ddev`, test step), src stubs, zig-objc pinned, Vite + bridge-js, gitignore/README/CI | DONE |
 | 1.2 | `app.zig` NSApplication bootstrap, activation policy `.regular`, menu with Cmd+Q | DONE |
 | 1.3 | `window.zig` NSWindow titled/closable/resizable, centered, makeKeyAndOrderFront | DONE |
-| 1.4 | `webview.zig` WKWebView filling contentView, loadHTMLString inline page, inspectable=true | TODO |
+| 1.4 | `webview.zig` WKWebView filling contentView, loadHTMLString inline page, inspectable=true | DONE |
 | 1.5 | Example in `main.zig`; `zig build run` opens a window | TODO |
 
 ## M2 — JS→Zig bridge
@@ -59,6 +59,9 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 
 ## Log
 
+- M1.4 — orchestrator — code-reviewer APPROVE (zero findings; config +1 consumed by initWithFrame:configuration: and defer-released, webview +1 owned by deinit, contentView() borrowed/not-released, CGRect by-value return path correct on aarch64, CG types made pub without layout change). test-runner green 32/32 (3× deterministic), live WKWebView tests stable headless, 0 impl bugs. `zig build` + `zig build test` exit 0. Committed. → DONE
+- M1.4 — test-runner — `zig build` + `zig build test` green (8/8 steps, 32/32, exit 0, deterministic across 3 runs). Live WKWebView tests confirmed stable headless. Added 2 tests (nsString UTF-8 round-trip; loadHTMLString adversarial empty/invalid-UTF-8/64KiB) + extended selector-responder coverage (addSubview:/bounds for the attach surface). No impl bugs. attach() live test deferred to manual checklist M1.4-G1..G5. → TESTING
+- M1.4 — zig-developer — implemented `src/webview.zig`: `WebView{init/attach/loadHTMLString/deinit}` — WKWebView + fresh WKWebViewConfiguration, `setInspectable:true`, `attach()` fills window contentView via width|height autoresizingMask, `loadHTMLString:baseURL:` (nil baseURL). No ARC (config +1 defer-released after initWithFrame: retains it; webview +1 owned by deinit, errdefer on init). Reused window.zig CG types (made pub) + added `Window.contentView()` accessor. WKWebView init empirically headless-safe → live tests added. `zig build` + `zig build test` green (30/30). → IN_REVIEW
 - M1.3 — orchestrator — code-reviewer APPROVE (no CRITICAL/MAJOR; +1 NSWindow owned by deinit with errdefer on the only fallible path, title NSString +1/defer-released, nil sender for makeKeyAndOrderFront:, CGRect extern-ABI by-value path verified for aarch64). test-runner green 22/22 (3× deterministic), 0 impl bugs. `zig build` + `zig build test` exit 0. Committed. → DONE
 - M1.3 — test-runner — `zig build` + `zig build test` green, 22/22, exit 0, deterministic across 3 runs. Added 3 headless-safe tests to `src/window.zig` (CGPoint/CGSize/CGFloat C-ABI layout; NSWindow + NSString selector-responder checks). Found + fixed 1 test bug (wrong `respondsToSelector` variant for a class method); 0 implementation bugs. GUI behaviour deferred to manual checklist M1.3-G1..G8. → TESTING
 - M1.3 — zig-developer — implemented `src/window.zig`: `Window{init/deinit/setTitle}` creating a titled/closable/resizable, centered NSWindow shown via `makeKeyAndOrderFront:`. CGRect/CGPoint/CGSize as `extern struct` for msgSend ABI. No ARC (window +1 owned by deinit, errdefer on error path; title NSString +1/defer-released). `init()` not headless-safe (needs window server) → no live-init test, GUI deferred to manual checklist. `zig build` + `zig build test` green. → IN_REVIEW
@@ -89,6 +92,11 @@ GUI behaviour cannot run under headless `zig build test` (no window server / blo
 - **M1.3-G6 (front+key):** the window comes to the front and becomes key (`makeKeyAndOrderFront:`) without a manual click.
 - **M1.3-G7 (setTitle):** calling `setTitle` with a new value updates the visible title bar text live.
 - **M1.3-G8 (shutdown):** Cmd+Q quits cleanly with the window on screen (no leak/abort on shutdown).
+- **M1.4-G1 (fill):** the WKWebView fills the entire window contentView edge-to-edge (no gray border/gap).
+- **M1.4-G2 (resize):** resizing the window tracks web content on both axes (width|height autoresizing), no clipping/letterboxing.
+- **M1.4-G3 (inspector):** right-click → "Inspect Element" (or Develop menu) opens the Web Inspector (`setInspectable:true`; macOS 13.3+).
+- **M1.4-G4 (render):** inline `loadHTMLString` page renders (heading/text visible) and is interactive (text selectable).
+- **M1.4-G5 (shutdown):** Cmd+Q quits cleanly with the webview attached (no hang/crash on teardown).
 
 ## Blocked
 

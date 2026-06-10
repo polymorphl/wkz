@@ -19,19 +19,20 @@ const NSWindowStyleMaskResizable: c_ulong = 1 << 3;
 const NSBackingStoreBuffered: c_ulong = 2;
 
 /// `CGFloat` on 64-bit Apple platforms is a `double`. NSWindow geometry is
-/// expressed in these.
-const CGFloat = f64;
+/// expressed in these. Public so sibling modules (e.g. webview.zig) share the
+/// one canonical Core Graphics geometry ABI rather than redefining it.
+pub const CGFloat = f64;
 
 /// `CGPoint` / `NSPoint`: the origin of a rect, in points.
 /// `extern struct` so it is passed by value over the C ABI by zig-objc's
 /// msgSend (which requires extern/packed layout for struct arguments).
-const CGPoint = extern struct {
+pub const CGPoint = extern struct {
     x: CGFloat,
     y: CGFloat,
 };
 
 /// `CGSize` / `NSSize`: the extent of a rect, in points.
-const CGSize = extern struct {
+pub const CGSize = extern struct {
     width: CGFloat,
     height: CGFloat,
 };
@@ -39,7 +40,7 @@ const CGSize = extern struct {
 /// `CGRect` / `NSRect`: the content rectangle handed to NSWindow. 32 bytes
 /// (4 × f64); zig-objc selects the correct objc_msgSend variant for the size
 /// and architecture automatically.
-const CGRect = extern struct {
+pub const CGRect = extern struct {
     origin: CGPoint,
     size: CGSize,
 };
@@ -101,6 +102,13 @@ pub const Window = struct {
         ns_window.msgSend(void, "makeKeyAndOrderFront:", .{@as(?*anyopaque, null)});
 
         return .{ .ns_window = ns_window };
+    }
+
+    /// The window's `contentView` (an `NSView`) — the surface a WKWebView is
+    /// added to (M1.4). The returned reference is owned by the NSWindow, not the
+    /// caller: do NOT release it. Must be called on the main thread.
+    pub fn contentView(self: Window) objc.Object {
+        return self.ns_window.msgSend(objc.Object, "contentView", .{});
     }
 
     /// Release the owned NSWindow reference. After this the `Window` is dead.
@@ -175,6 +183,9 @@ test "Window exposes the documented public API surface" {
 
     try std.testing.expectEqual(void, @typeInfo(@TypeOf(Window.deinit)).@"fn".return_type.?);
 
+    // contentView() exposes the NSView a WKWebView attaches to (M1.4).
+    try std.testing.expectEqual(objc.Object, @typeInfo(@TypeOf(Window.contentView)).@"fn".return_type.?);
+
     const SetTitleRet = @typeInfo(@TypeOf(Window.setTitle)).@"fn".return_type.?;
     try std.testing.expectEqual(Error!void, SetTitleRet);
 }
@@ -204,6 +215,7 @@ test "NSWindow instances respond to the selectors init/setTitle use" {
         "setTitle:",
         "center",
         "makeKeyAndOrderFront:",
+        "contentView",
         "release",
     };
     inline for (selectors) |name| {
