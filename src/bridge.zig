@@ -19,9 +19,21 @@
 //! through a runtime dispatch table (`std.StringHashMap`) to the registered Zig
 //! handler, passing the parsed `params`. The comptime-typed `registerHandler` +
 //! request/response (`__resolve`) correlation is M3.1/M3.2 — see the seam notes
-//! on `dispatchSlice`. Robustness ("logs, never crashes") is formalized in M2.4;
-//! here malformed input surfaces as a clean Zig error (no panic) that the
-//! `on_message` boundary logs.
+//! on `dispatchSlice`.
+//!
+//! M2.4 scope: the contract "malformed input logs, never crashes" is now
+//! enforced end-to-end on the message path. ANY input arriving from JS — empty,
+//! whitespace, invalid UTF-8, valid-JSON-but-not-an-object, missing/null/
+//! wrong-typed `method`, an oversized body, or one nested thousands of levels
+//! deep — is rejected as a clean `DispatchError` from the pure `dispatchSlice`
+//! core and then LOGGED + SWALLOWED at the void `dispatchMessage` boundary, so
+//! no Zig error ever escapes into the C-ABI IMP. A pre-parse size guard
+//! (`max_body_len`) rejects oversized bodies BEFORE the parser sees them; the
+//! parser itself is iterative and heap-bounded, so deep nesting yields an error
+//! (folded into `InvalidMessage`), never a stack overflow or panic. Every
+//! failure logs its stage (extraction / size / parse / missing-method /
+//! unknown-method) at `warn`, with the body byte length and a short prefix
+//! only — never the full (hostile, possibly huge) payload.
 //!
 //! Main thread only. No ARC: see the ownership notes on `Bridge`.
 
@@ -29,6 +41,37 @@ const std = @import("std");
 const objc = @import("objc");
 
 const c = objc.c;
+
+/// Scoped logger for the bridge. `std.log.scoped(comptime scope: @EnumLiteral()) type`
+/// (std/log.zig:137) returns a namespace with `.warn`/`.info`/`.err`/`.debug`
+/// (each `(comptime format, args) void`, std/log.zig:153-176). Scoping to
+/// `.wkz_bridge` lets a host app filter/route bridge diagnostics distinctly.
+const log = std.log.scoped(.wkz_bridge);
+
+/// Maximum accepted size, in bytes, of one incoming message body BEFORE it is
+/// handed to `std.json.parseFromSlice`. Bodies larger than this are rejected
+/// (logged + dropped) without ever touching the parser.
+///
+/// Why a pre-parse cap (M2.4 hardening): the JSON parse-to-`Value` path is
+/// iterative but its working set is `O(nesting depth)` of heap memory — the
+/// scanner pushes each `[`/`{` onto a heap `BitStack` (json/Scanner.zig:328-334,
+/// memory note line 3) and the dynamic decoder grows a heap `Array` stack
+/// (json/dynamic.zig:79-119). std.json's own `default_max_value_len` (4 MiB,
+/// json/Scanner.zig:1571) only bounds a SINGLE string/number token, not the
+/// whole document or its depth — and `parseFromSlice` defaults `max_value_len`
+/// to the input length anyway (json/static.zig:32-34,134-138), so it is no guard
+/// at all here. A hostile page can `postMessage` an arbitrarily large / deeply
+/// nested body; without a cap that is unbounded attacker-controlled memory
+/// pressure (a DoS on a trust-but-bounded LOCAL channel). 1 MiB is far above any
+/// legitimate RPC payload (method name + small params) yet cheaply bounds the
+/// worst case. We reject by byte length before allocating any parse arena.
+pub const max_body_len: usize = 1 * 1024 * 1024;
+
+/// How many leading body bytes a rejection log line may quote. The body is
+/// hostile and potentially huge or sensitive, so failure logs NEVER include the
+/// whole payload — only its byte length plus this short prefix (for triage). See
+/// `logRejected`.
+const log_body_prefix_len: usize = 32;
 
 /// Process-unique name for the runtime `WKScriptMessageHandler` subclass. A
 /// registered Objective-C class lives for the whole process (it is not
@@ -55,8 +98,15 @@ pub const Error = error{
 /// crash"); for M2.3 they propagate cleanly out of `dispatchSlice` and are
 /// logged at the `on_message` boundary rather than panicking.
 pub const DispatchError = error{
+    /// The body byte length exceeded `max_body_len`. Rejected BEFORE parse — no
+    /// arena is allocated — so an oversized hostile body never reaches the JSON
+    /// parser (the pre-parse memory-pressure guard, M2.4).
+    MessageTooLarge,
     /// The body bytes did not parse as JSON, or the top-level value was not a
-    /// JSON object. Either way there is no message to dispatch.
+    /// JSON object. Either way there is no message to dispatch. This also covers
+    /// invalid UTF-8, numbers that overflow the parser's limits, and input so
+    /// deeply nested it exhausts the allocator (`OutOfMemory` from the parser is
+    /// folded in here): all surface as one clean error, never a panic.
     InvalidMessage,
     /// The parsed object had no `method` string (missing, or not a string).
     MissingMethod,
@@ -105,8 +155,10 @@ pub const OnMessage = *const fn (bridge: *Bridge, body: objc.Object) void;
 /// `OnMessage` is `void`, we log and swallow it here (M2.4 formalizes the
 /// logging policy); it never panics.
 fn dispatchMessage(bridge: *Bridge, body: objc.Object) void {
+    // STAGE: extraction (null body). Apple delivers a body for every message,
+    // but it is hostile input — guard rather than assume.
     if (body.value == null) {
-        std.log.warn("wkz bridge: received message with null body", .{});
+        log.warn("dropped message: null body (stage=extraction)", .{});
         return;
     }
 
@@ -118,15 +170,56 @@ fn dispatchMessage(bridge: *Bridge, body: objc.Object) void {
     // return type routes through zig-objc's optional-pointer case
     // (msg_send.zig:112-115 / unwrapType msg_send.zig:239-242) and yields the
     // raw result directly (it is not an Object), so a plain null check applies.
+    //
+    // STAGE: extraction (un-decodable body).
     const utf8 = body.msgSend(?[*:0]const u8, "UTF8String", .{}) orelse {
-        std.log.warn("wkz bridge: received message with un-decodable body", .{});
+        log.warn("dropped message: un-decodable body (stage=extraction)", .{});
         return;
     };
     const bytes = std.mem.span(utf8);
 
-    bridge.dispatchSlice(bytes) catch |err| {
-        std.log.warn("wkz bridge: dropped message ({s})", .{@errorName(err)});
-    };
+    // `dispatchSlice` is the pure core: it RETURNS a `DispatchError` (tests
+    // assert the kinds precisely). The void IMP boundary lives here — so this is
+    // where every error kind is mapped to a useful, redacted log line and then
+    // SWALLOWED. No error may escape this function: the ObjC IMP
+    // (`impUserContentControllerDidReceive`) calls `handleMessage` -> here, all
+    // `void`; a Zig error propagating into the C-ABI IMP would be undefined, so
+    // the `catch` below is the hard guarantee that it cannot.
+    bridge.dispatchSlice(bytes) catch |err| logRejected(err, bytes);
+}
+
+/// Log a rejected message (the void-boundary swallow point). Never logs the
+/// whole body: the body is hostile input and may be huge or sensitive, so we
+/// emit the failure STAGE/kind, the body byte length, and at most
+/// `log_body_prefix_len` leading bytes for triage. The prefix is printed with
+/// `{s}` over a clamped slice — non-printable bytes are passed through to the
+/// log sink as-is (bounded), never expanded; the load-bearing diagnostic is the
+/// error kind + length, not the content.
+fn logRejected(err: DispatchError, bytes: []const u8) void {
+    const n = @min(bytes.len, log_body_prefix_len);
+    const prefix = bytes[0..n];
+    switch (err) {
+        DispatchError.MessageTooLarge => log.warn(
+            "dropped message: body too large (stage=size, len={d}, cap={d})",
+            .{ bytes.len, max_body_len },
+        ),
+        DispatchError.InvalidMessage => log.warn(
+            "dropped message: invalid/unparseable JSON (stage=parse, len={d}, prefix=\"{s}\")",
+            .{ bytes.len, prefix },
+        ),
+        DispatchError.MissingMethod => log.warn(
+            "dropped message: missing/non-string method (stage=missing-method, len={d}, prefix=\"{s}\")",
+            .{ bytes.len, prefix },
+        ),
+        DispatchError.UnknownMethod => log.warn(
+            "dropped message: unknown method (stage=unknown-method, len={d}, prefix=\"{s}\")",
+            .{ bytes.len, prefix },
+        ),
+        DispatchError.OutOfMemory => log.warn(
+            "dropped message: out of memory while dispatching (stage=parse, len={d})",
+            .{bytes.len},
+        ),
+    }
 }
 
 /// The JS->Zig bridge attached to one webview.
@@ -250,8 +343,21 @@ pub const Bridge = struct {
     /// request/response correlation will later read it here to carry it into the
     /// `__resolve(id, result)` reply without reworking this parse path.
     pub fn dispatchSlice(self: *Bridge, bytes: []const u8) DispatchError!void {
-        // parseFromSlice (json/static.zig:71): (T, allocator, s, options)
-        // !Parsed(T). Treat any parse failure as InvalidMessage (hostile input).
+        // Pre-parse size guard (M2.4): reject oversized bodies by byte length
+        // BEFORE allocating any parse arena, so an unbounded attacker-controlled
+        // slice never reaches std.json (see `max_body_len` for the DoS rationale
+        // and why std.json's own limits do not cover this). This early return
+        // has allocated nothing, so there is nothing to free — no leak.
+        if (bytes.len > max_body_len) return DispatchError.MessageTooLarge;
+
+        // parseFromSlice (json/static.zig:73): (T, allocator, s, options)
+        // !Parsed(T). Any parse failure — syntax error, invalid UTF-8, a number
+        // longer than the parser's max_value_len, or OutOfMemory from a deeply
+        // nested document (the scanner's depth stack is heap-backed and the
+        // decode loop is ITERATIVE, json/Scanner.zig:328-334 + json/dynamic.zig:
+        // 79-119, so deep nesting exhausts the allocator, never the C stack /
+        // never panics) — is folded into InvalidMessage. The parser returns an
+        // error in every case; it does not panic on any input shape.
         const parsed = std.json.parseFromSlice(
             std.json.Value,
             self.allocator,
@@ -385,7 +491,7 @@ fn impUserContentControllerDidReceive(
     const ctx = handler.getInstanceVariable(ctx_ivar_name);
     if (ctx.value == null) {
         // No context wired (e.g. handler fired before attach()): nothing to do.
-        std.log.warn("wkz bridge: message with no context attached", .{});
+        log.warn("dropped message: no context attached (stage=extraction)", .{});
         return;
     }
     const bridge: *Bridge = @ptrCast(@alignCast(ctx.value));
@@ -1037,6 +1143,241 @@ test "dispatchMessage: NSString body extracts to UTF-8 and dispatches (ObjC leg,
     dispatchMessage(&bridge, body);
     try std.testing.expect(DispatchProbe.fired);
     try std.testing.expectEqualStrings("grace", DispatchProbe.saw_string.?);
+}
+
+// =====================================================================
+// M2.4 — adversarial battery: "malformed input logs, never crashes"
+//
+// Every test below runs under std.testing.allocator (leak-detecting). The
+// contract under test on the PURE core (`dispatchSlice`) is: for ANY input
+// shape, return a clean `DispatchError` (asserted kind) OR dispatch — never
+// panic, never leak. The void boundary (`dispatchMessage`) is exercised
+// separately to prove it logs + SWALLOWS (returns void, no error escapes).
+// =====================================================================
+
+test "M2.4 dispatchSlice: oversized body is rejected BEFORE parse (MessageTooLarge, no leak)" {
+    // Construct a body exactly one byte over `max_body_len`. It must be rejected
+    // by the size guard before any parse arena is allocated — so testing.allocator
+    // reports no leak (there was nothing to free). The slice contents are valid
+    // JSON-ish bytes so the ONLY thing rejecting it is the length check, not a
+    // parse error. We allocate the transient over-cap slice with the testing
+    // allocator and free it ourselves (this is the test's buffer, not the
+    // bridge's — the bridge allocates nothing on this path).
+    var bridge = try makeTestBridge();
+    defer bridge.deinit();
+    try bridge.addHandler("x", DispatchProbe.record);
+
+    const oversized = try std.testing.allocator.alloc(u8, max_body_len + 1);
+    defer std.testing.allocator.free(oversized);
+    @memset(oversized, ' '); // whitespace: would be a parse error if it reached the parser
+
+    DispatchProbe.reset();
+    try std.testing.expectError(DispatchError.MessageTooLarge, bridge.dispatchSlice(oversized));
+    try std.testing.expect(!DispatchProbe.fired);
+
+    // A body exactly AT the cap is NOT rejected by size (it falls through to the
+    // parser, which then rejects whitespace as InvalidMessage). Proves the
+    // boundary is `> cap`, not `>= cap`, and that the size path allocates nothing.
+    const at_cap = try std.testing.allocator.alloc(u8, max_body_len);
+    defer std.testing.allocator.free(at_cap);
+    @memset(at_cap, ' ');
+    try std.testing.expectError(DispatchError.InvalidMessage, bridge.dispatchSlice(at_cap));
+}
+
+test "M2.4 dispatchSlice: deeply nested JSON returns a clean error, never a stack overflow/panic" {
+    // THE key anti-panic test. std.json parses to Value ITERATIVELY (an explicit
+    // heap Array stack, json/dynamic.zig:79-119) and tracks nesting on a heap
+    // BitStack (json/Scanner.zig:328-334) — memory is O(depth), NOT C-stack. So
+    // pathological nesting exhausts the allocator at worst (folded into
+    // InvalidMessage), it does NOT recurse the native stack and cannot overflow
+    // it. We build 50k open brackets (well within max_body_len) and assert a
+    // clean error comes back rather than the test process crashing. Reaching the
+    // assertion at all IS the proof there was no stack overflow / panic.
+    var bridge = try makeTestBridge();
+    defer bridge.deinit();
+
+    const depth = 50_000;
+    const deep = try std.testing.allocator.alloc(u8, depth);
+    defer std.testing.allocator.free(deep);
+    @memset(deep, '['); // 50k unbalanced '[' — never completes a value
+    try std.testing.expect(deep.len <= max_body_len);
+
+    // Must return InvalidMessage (incomplete/too-deep document), not crash.
+    try std.testing.expectError(DispatchError.InvalidMessage, bridge.dispatchSlice(deep));
+}
+
+test "M2.4 dispatchSlice: i64-overflow number is handled, no panic" {
+    // A number too large for i64. With parse_numbers=true (the default), std.json
+    // yields `.number_string` for such a value rather than panicking on an i64
+    // cast. Either way dispatchSlice must not panic: here it is a well-formed
+    // object with a known method, so it dispatches and the handler receives the
+    // params unvalidated (the .number_string is just passed through).
+    var bridge = try makeTestBridge();
+    defer bridge.deinit();
+    try bridge.addHandler("big", ShapeProbe.record);
+
+    ShapeProbe.reset();
+    try bridge.dispatchSlice(
+        \\{"method":"big","params":99999999999999999999999999}
+    );
+    try std.testing.expect(ShapeProbe.fired);
+    // Pin the observed representation: a value past i64 range comes through as
+    // number_string, never an .integer (which would have implied a lossy/overflow
+    // cast). If this ever flips, we want the test to flag it.
+    try std.testing.expectEqual(.number_string, ShapeProbe.tag);
+}
+
+test "M2.4 dispatchSlice: invalid UTF-8 inside the body returns a clean error, no panic" {
+    var bridge = try makeTestBridge();
+    defer bridge.deinit();
+    try bridge.addHandler("x", DispatchProbe.record);
+
+    // A JSON string containing a lone 0x80 continuation byte (invalid UTF-8).
+    const bad = [_]u8{ '{', '"', 'm', 'e', 't', 'h', 'o', 'd', '"', ':', '"', 0x80, '"', '}' };
+    DispatchProbe.reset();
+    try std.testing.expectError(DispatchError.InvalidMessage, bridge.dispatchSlice(&bad));
+    try std.testing.expect(!DispatchProbe.fired);
+}
+
+test "M2.4 dispatchSlice: hostile input-shape matrix — each logs/returns the exact outcome, no panic, no leak" {
+    // The full shape matrix from the M2.4 spec. Every case runs under
+    // testing.allocator; an entry that leaked the parse arena (e.g. a missed
+    // deinit on some early-return path) would fail the test at teardown. None may
+    // panic. Each row asserts the precise DispatchError kind (or, for the known
+    // method, a successful dispatch handled below).
+    var bridge = try makeTestBridge();
+    defer bridge.deinit();
+    try bridge.addHandler("known", DispatchProbe.record);
+
+    const Case = struct { body: []const u8, want: DispatchError };
+    const cases = [_]Case{
+        .{ .body = "", .want = DispatchError.InvalidMessage }, // empty
+        .{ .body = "   ", .want = DispatchError.InvalidMessage }, // whitespace-only
+        .{ .body = "\t\n ", .want = DispatchError.InvalidMessage }, // mixed whitespace
+        .{ .body = "null", .want = DispatchError.InvalidMessage }, // valid JSON null
+        .{ .body = "true", .want = DispatchError.InvalidMessage }, // valid JSON bool
+        .{ .body = "\"a string\"", .want = DispatchError.InvalidMessage }, // top-level string
+        .{ .body = "[1,2]", .want = DispatchError.InvalidMessage }, // top-level array
+        .{ .body = "{not json", .want = DispatchError.InvalidMessage }, // truncated garbage
+        .{ .body = "{}", .want = DispatchError.MissingMethod }, // object, no method
+        .{ .body =
+        \\{"method":null}
+        , .want = DispatchError.MissingMethod }, // method present but null
+        .{ .body =
+        \\{"method":123}
+        , .want = DispatchError.MissingMethod }, // method present but a number
+        .{ .body =
+        \\{"method":["x"]}
+        , .want = DispatchError.MissingMethod }, // method present but an array
+        .{ .body =
+        \\{"method":"nope"}
+        , .want = DispatchError.UnknownMethod }, // valid + unknown method
+        .{ .body =
+        \\{"method":"nope","params":null}
+        , .want = DispatchError.UnknownMethod }, // unknown wins over null params
+    };
+
+    for (cases) |case| {
+        DispatchProbe.reset();
+        try std.testing.expectError(case.want, bridge.dispatchSlice(case.body));
+        try std.testing.expect(!DispatchProbe.fired);
+    }
+
+    // method present + params null (registered method): null params must be
+    // tolerated — the handler runs, receiving a .null params value.
+    DispatchProbe.reset();
+    try bridge.dispatchSlice(
+        \\{"method":"known","params":null}
+    );
+    try std.testing.expect(DispatchProbe.fired);
+    try std.testing.expect(DispatchProbe.saw_string == null); // null params -> no name
+
+    // method present, params absent (registered method): also dispatches.
+    DispatchProbe.reset();
+    try bridge.dispatchSlice(
+        \\{"method":"known"}
+    );
+    try std.testing.expect(DispatchProbe.fired);
+}
+
+test "M2.4 dispatchSlice: duplicate object keys return a clean error, no panic, no leak" {
+    // Duplicate keys are an attacker-trivial shape. Parsing to a dynamic Value
+    // with the DEFAULT ParseOptions (`duplicate_field_behavior = .@"error"`,
+    // json/static.zig:22-26) makes std.json return `error.DuplicateField`
+    // (json/dynamic.zig:152) — which dispatchSlice folds into InvalidMessage. The
+    // load-bearing assertion is that this is a clean ERROR return, NOT a panic /
+    // process crash, and that the partially-built arena is freed (no leak under
+    // testing.allocator). Reaching the assertion proves no crash.
+    var bridge = try makeTestBridge();
+    defer bridge.deinit();
+    try bridge.addHandler("dup", DispatchProbe.record);
+
+    DispatchProbe.reset();
+    try std.testing.expectError(DispatchError.InvalidMessage, bridge.dispatchSlice(
+        \\{"method":"dup","method":"dup","params":{"name":"z"}}
+    ));
+    try std.testing.expect(!DispatchProbe.fired);
+}
+
+test "M2.4 dispatchMessage (void boundary): hostile bodies log + SWALLOW, return void, no error escapes" {
+    // Drive the void IMP-boundary path with real NSStrings built headlessly via
+    // stringWithUTF8String:. For each hostile body dispatchMessage must return
+    // VOID (it has no error type — proving by construction no DispatchError can
+    // escape into the C-ABI IMP). No handler fires; nothing leaks. We cover the
+    // size, parse, missing-method and unknown-method stages through the real
+    // NSString extraction leg.
+    var bridge = try makeTestBridge();
+    defer bridge.deinit();
+    try bridge.addHandler("known", DispatchProbe.record);
+
+    const NSString = objc.getClass("NSString").?;
+    const bodies = [_][:0]const u8{
+        "", // empty -> parse stage
+        "   ", // whitespace -> parse stage
+        "{not json", // garbage -> parse stage
+        "[1,2,3]", // not-an-object -> parse stage
+        "{}", // missing-method stage
+        \\{"method":123}
+        , // non-string method -> missing-method stage
+        \\{"method":"nope"}
+        , // unknown-method stage
+    };
+
+    for (bodies) |b| {
+        DispatchProbe.reset();
+        const body = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{b.ptr});
+        // The call returns void: if dispatchMessage's signature ever grew an
+        // error type, this line would fail to compile — the compiler enforces the
+        // "no error escapes the boundary" contract for us.
+        dispatchMessage(&bridge, body);
+        try std.testing.expect(!DispatchProbe.fired);
+    }
+
+    // Regression: a well-formed known message through the SAME void boundary still
+    // dispatches (the swallowing path did not break the happy path).
+    DispatchProbe.reset();
+    const ok = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{
+        \\{"method":"known","params":{"name":"ok"}}
+    });
+    dispatchMessage(&bridge, ok);
+    try std.testing.expect(DispatchProbe.fired);
+    try std.testing.expectEqualStrings("ok", DispatchProbe.saw_string.?);
+}
+
+test "M2.4 dispatchMessage signature: returns void (no error union can escape to the IMP)" {
+    // Compile-time proof of the void-boundary contract: dispatchMessage and the
+    // public handleMessage seam both return plain `void`, so the C-ABI IMP can
+    // never receive a Zig error from them. (dispatchSlice, the pure core, DOES
+    // return DispatchError — that error is consumed by the catch in
+    // dispatchMessage, never propagated.)
+    try std.testing.expectEqual(void, @typeInfo(@TypeOf(dispatchMessage)).@"fn".return_type.?);
+    try std.testing.expectEqual(void, @typeInfo(@TypeOf(Bridge.handleMessage)).@"fn".return_type.?);
+}
+
+test "M2.4 max_body_len is a sane, documented constant" {
+    // Pin the cap so an accidental change is caught. 1 MiB: far above any
+    // legitimate local RPC payload, bounded enough to deny memory-pressure DoS.
+    try std.testing.expectEqual(@as(usize, 1 * 1024 * 1024), max_body_len);
 }
 
 // --- API-surface / type contract (compile-time) ---

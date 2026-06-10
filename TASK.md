@@ -4,7 +4,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 
 ## Current focus
 
-**M2.4 — Malformed input logs, never crashes.** (M2.1, M2.2, M2.3 DONE.)
+**M3.1 — evaluateJavaScript + `__resolve` convention.** (M2 complete.)
 
 ---
 
@@ -25,7 +25,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 | 2.1 | `objc_helpers.zig` runtime class creation (allocateClassPair + method registration), unit-tested | DONE |
 | 2.2 | ScriptMessageHandler class implementing `userContentController:didReceiveScriptMessage:`, registered as `"bridge"` | DONE |
 | 2.3 | NSDictionary → Zig extraction, std.json parse, dispatch table | DONE |
-| 2.4 | Malformed input logs, never crashes | TODO |
+| 2.4 | Malformed input logs, never crashes | DONE |
 
 ## M3 — Typed RPC + Vite
 
@@ -59,6 +59,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 
 ## Log
 
+- M2.4 — orchestrator — 74/74 tests pass (73 lib + 1 example). adversarial battery: oversized body pre-parse guard, deeply-nested iterative-parse no stack-overflow, i64-overflow number_string, invalid UTF-8, hostile shape matrix (14 cases), duplicate keys, void-boundary swallow. logRejected emits stage/len/prefix only, never full payload. `zig build test --summary all` exit 0. Committed. → DONE
 - M2.3 — orchestrator — code-reviewer APPROVE_WITH_MINORS (no CRITICAL/MAJOR; parse-arena freed on all paths, params borrow call-scoped + documented, static-literal map keys, no panic on malformed, std.json/StringHashMap signatures spot-checked real). 2 MINORs sent back to zig-developer (fix cycle 1): null-`UTF8String` crash guard added; dead `_ = root.get("id")` removed. MINOR#3 (body size-cap) → M2.4. Re-verified green by orchestrator + test-runner 65/65 (seed-independent ×6), 0 impl bugs. Committed. → DONE
 - M2.3 — test-runner — suite 65/65 (64 lib + 1 example), exit 0, seed-independent across 6 runs. Added 5 headless tests under testing.allocator (unknown-method arena-free — the MAJOR-risk leak path; nested object/array params intact; non-object params pass-through unvalidated; multi-handler routing discriminates by key; populated-map deinit frees N entries). No impl bugs. Residual: `UTF8String`-null defensive guard + live-JS round-trip remain manual (M2.2-G/M2.3 checklist). → TESTING
 - M2.3 — zig-developer — implemented JSON-string dispatch in `src/bridge.zig` per wire-format decision: body NSString → `UTF8String` → `std.json.parseFromSlice` → method/params/(id seam) → `std.StringHashMap(Handler)` lookup → invoke. `Bridge.init(allocator, ucc)` owns the map; `addHandler(method, fn)` runtime registration; pure `dispatchSlice([]const u8)` core (NSString-free, headless-testable); `dispatchMessage` does the ObjC leg. `DispatchError{InvalidMessage,MissingMethod,UnknownMethod}||Allocator.Error`. No ARC (UTF8String borrowed/not freed, Parsed.deinit on all paths, map freed in deinit, handler +1 still released). Fix cycle 1 applied 2 review MINORs (null-UTF8String guard; dead-id removal). `zig build` + `zig build test` green (60→65/65). → IN_REVIEW
