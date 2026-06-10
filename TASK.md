@@ -4,7 +4,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 
 ## Current focus
 
-**M3.3 — bridge-js TS client `invoke<T>()`, HMR-idempotent.** (M3.1, M3.2 DONE.)
+**M3.4 — `-Ddev` wiring + `NSAllowsLocalNetworking`.** (M3.1–M3.3 DONE.)
 
 ---
 
@@ -33,7 +33,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 |----|------|--------|
 | 3.1 | `evaluateJavaScript` (nil handler) + `__resolve(id, result)` convention | DONE |
 | 3.2 | `bridge.zig` public API `registerHandler(comptime method, fn)` with request/response correlation | DONE |
-| 3.3 | bridge-js TS client `invoke<T>()`, HMR-idempotent (`import.meta.hot.dispose`) | TODO |
+| 3.3 | bridge-js TS client `invoke<T>()`, HMR-idempotent (`import.meta.hot.dispose`) | DONE |
 | 3.4 | `-Ddev` wiring + Info.plist `NSAllowsLocalNetworking` documented | TODO |
 | 3.5 | frontend demo round-trip | TODO |
 
@@ -59,6 +59,8 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 
 ## Log
 
+- M3.3 — orchestrator — typecheck exit 0. __resolve global installed as side-effect; invoke<T> monotonic id + pending Map; HMR dispose rejects pending + deletes global; outside-WKWebView rejects immediately; JSON.parse failure rejects promise; unknown id → console.warn no-op; id wraps at MAX_SAFE_INTEGER. Local ViteHotContext augmentation avoids vite devDep. Manual checklist M3.3-G1..G7. Committed. → DONE
+- M3.3 — zig-developer — implemented `bridge-js/src/index.ts`: `__resolve` global (installed as side-effect), `invoke<T>()` with monotonic id, pending Map, HMR dispose teardown. Added `bridge-js/tsconfig.json`. Local `ViteHotContext`/`ImportMeta` augmentation avoids vite devDependency. `npm run typecheck` exit 0. → DONE
 - M3.2 — orchestrator — code-reviewer APPROVE (0 findings; defer parsed.deinit() on all paths verified; id extraction else=>null covers float/bool/string/null safely; registerHandler passes comptime slice directly, no copy; DispatchProbe.last_id reset in reset()). test-runner 97/97 ×3. 3 new tests: id:0 passes 0 not null, "id":null → null, registerHandler multi-method routing. Manual checklist M3.2-G1..G4. Committed. → DONE
 - M3.1 — orchestrator — code-reviewer APPROVE (0 findings; ARC clean — NSString +1/defer-released in evaluate, buildResolveJS slice defer-freed in resolve on all paths including nil-webview early-return; webview BORROWED not released in deinit; main.zig untouched — doesn't call Bridge.init yet; allocPrintSentinel return type [:0]u8 verified). test-runner 87/87 ×3. 4 new tests: buildResolveJS double-quote raw-inject contract, minInt(i64), OOM via FailingAllocator, buildResolveJS API surface. Manual checklist M3.1-G1..G4 authored. Committed. → DONE
 - M2.4 — orchestrator — 74/74 tests pass (73 lib + 1 example). adversarial battery: oversized body pre-parse guard, deeply-nested iterative-parse no stack-overflow, i64-overflow number_string, invalid UTF-8, hostile shape matrix (14 cases), duplicate keys, void-boundary swallow. logRejected emits stage/len/prefix only, never full payload. `zig build test --summary all` exit 0. Committed. → DONE
@@ -133,6 +135,16 @@ GUI behaviour cannot run under headless `zig build test` (no window server / blo
 - **M2.2-G3 (body shapes):** posting a string / number / object each logs the matching ObjC body class (`__NSCFString` / `__NSCFNumber` / `__NSDictionary…`), confirming body reachable for M2.3 extraction.
 - **M2.2-G4 (ordering):** handler installed (`Bridge.attach`) before page load; a page that posts on load is received (no message lost).
 - **M2.2-G5 (teardown):** Cmd+Q after exercising the bridge quits cleanly (handler deregistered, no abort).
+
+### M3.3 — bridge-js invoke<T> (needs live WKWebView + Vite dev server + run loop)
+
+- **M3.3-G1 (global installed):** Web Inspector → Console, `typeof __resolve` → `"function"`.
+- **M3.3-G2 (invoke round-trip):** Register Zig `"echo"` handler calling `bridge.resolve(id.?, params_json)`. In console: `await invoke("echo", "hello")` → `"hello"`.
+- **M3.3-G3 (id=0 works):** First call uses `id=0`; `__resolve(0, ...)` resolves it.
+- **M3.3-G4 (outside WKWebView rejects):** In Node or plain browser, `invoke("x")` rejects immediately with "not available" error.
+- **M3.3-G5 (invalid JSON rejects):** `__resolve(0, "not-json{{{")` rejects the pending promise with a parse error, no page crash.
+- **M3.3-G6 (HMR teardown):** Pending `invoke("slow")` in flight → save `index.ts` → promise rejects with "HMR reload, call abandoned"; `typeof __resolve` is `"function"` again after reload.
+- **M3.3-G7 (unknown id no-op):** `__resolve(9999, "42")` when no pending call → `console.warn`, no exception.
 
 ### M3.2 — registerHandler + id-correlation (needs live WKWebView + run loop + loaded page)
 
