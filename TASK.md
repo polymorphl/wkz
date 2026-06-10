@@ -4,7 +4,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 
 ## Current focus
 
-**M4.1 — `scheme.zig` WKURLSchemeHandler.** (M3 complete.)
+**M4.2 — Build step: `vite build` + embed `dist/`.** (M4.1 DONE.)
 
 ---
 
@@ -41,7 +41,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 
 | ID | Task | Status |
 |----|------|--------|
-| 4.1 | `scheme.zig` WKURLSchemeHandler serving embedded `dist/` at `app://local` | TODO |
+| 4.1 | `scheme.zig` WKURLSchemeHandler serving embedded `dist/` at `app://local` | DONE |
 | 4.2 | Build step runs `vite build` + embeds output, zero external assets | TODO |
 | 4.3 | `.app` bundle generation (`Contents/MacOS`, Info.plist) | TODO |
 | 4.4 | Ad-hoc codesign, launches from Finder | TODO |
@@ -59,6 +59,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 
 ## Log
 
+- M4.1 — orchestrator — code-reviewer APPROVE_WITH_MINORS (MAJOR: AssetEntry.mime []const u8 → [:0]const u8 to eliminate unsound @ptrCast; MINOR#1: log.warn on null URL path; MINOR#2: nsString helper [:0]const u8 alignment). Fix cycle 1 applied. test-runner 114/114 ×4. 3 new tests: AssetEntry.mime sentinel-type pin, AssetMap.get unknown-path contract (7 variants), initWithSchemeHandler API surface pin. Manual checklist MC-S1..S4. Committed. → DONE
 - M3.5 — orchestrator — main.zig: DebugAllocator + Bridge.init/attach + registerHandler("ping"→"pong") wired before loadURL; frontend: vite.config.ts alias (new URL, no __dirname), tsconfig paths + include vite.config.ts, main.ts invoke<string>("ping") demo, style.css dark minimal. Both typechecks exit 0. 102/102 tests, zig build -Ddev=true exit 0. Committed. → DONE
 - M3.4 — orchestrator — code-reviewer APPROVE (0 CRITICAL/MAJOR; 1 NOTE: nil NSURL from malformed URL silently no-ops — ObjC messaging nil is safe, acceptable for M3.4). test-runner 102/102 ×6, `zig build -Ddev=true` exit 0. API surface test extended: @hasDecl(loadURL), return-type pin, param-type pin [:0]const u8. NSAllowsLocalNetworking comment added in main.zig. Manual checklist M3.4-G1..G5. Committed. → DONE
 - M3.3 — orchestrator — typecheck exit 0. __resolve global installed as side-effect; invoke<T> monotonic id + pending Map; HMR dispose rejects pending + deletes global; outside-WKWebView rejects immediately; JSON.parse failure rejects promise; unknown id → console.warn no-op; id wraps at MAX_SAFE_INTEGER. Local ViteHotContext augmentation avoids vite devDep. Manual checklist M3.3-G1..G7. Committed. → DONE
@@ -137,6 +138,13 @@ GUI behaviour cannot run under headless `zig build test` (no window server / blo
 - **M2.2-G3 (body shapes):** posting a string / number / object each logs the matching ObjC body class (`__NSCFString` / `__NSCFNumber` / `__NSDictionary…`), confirming body reachable for M2.3 extraction.
 - **M2.2-G4 (ordering):** handler installed (`Bridge.attach`) before page load; a page that posts on load is received (no message lost).
 - **M2.2-G5 (teardown):** Cmd+Q after exercising the bridge quits cleanly (handler deregistered, no abort).
+
+### M4.1 — Scheme handler live behavior (needs `zig build run`, window server)
+
+- **MC-S1:** Run `zig build run`. Web Inspector → Network: responses have status 200 and correct Content-Type per asset type (HTML, JS, CSS).
+- **MC-S2:** Navigate webview to `app://local/does-not-exist.xyz`. Network error shown, no crash.
+- **MC-S3:** Close + reopen window without quitting. Scheme handler keeps serving — class registration idempotent across windows.
+- **MC-S4:** Web Inspector → Network: `font/woff2` and `application/json` MIME types on those asset types.
 
 ### M3.4 — `-Ddev` wiring (needs Vite dev server + run loop)
 

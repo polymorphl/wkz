@@ -14,13 +14,15 @@ pub const window = @import("window.zig");
 pub const webview = @import("webview.zig");
 pub const bridge = @import("bridge.zig");
 
-// Internal modules: not part of the public surface, but kept in the compile and
-// test graph so their stubs build and their tests run.
-const scheme = @import("scheme.zig");
+// `scheme` is now part of the public API surface (M4.1): consumers use
+// `AssetMap`, `AssetEntry`, `SchemeHandler`, and `mimeForPath` directly.
+pub const scheme = @import("scheme.zig");
+
+// Internal module: not part of the public surface, but kept in the compile
+// and test graph so its tests run.
 const objc_helpers = @import("objc_helpers.zig");
 
 test {
     std.testing.refAllDecls(@This());
-    _ = scheme;
     _ = objc_helpers;
 }

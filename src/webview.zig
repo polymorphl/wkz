@@ -121,6 +121,47 @@ pub const WebView = struct {
         return config.msgSend(objc.Object, "userContentController", .{});
     }
 
+    /// Create a WKWebView with a custom URL scheme handler pre-registered on
+    /// its configuration. The scheme handler MUST be registered before the
+    /// WKWebView is created — `WKWebViewConfiguration` is frozen afterwards.
+    ///
+    /// `handler` is borrowed (not +1, not retained by this function). Pass
+    /// `SchemeHandler.object()` from a live `SchemeHandler`.
+    /// `scheme` is a NUL-terminated scheme string (e.g. `"app"`).
+    ///
+    /// Ownership is identical to `init()`: `deinit` releases the `+1`
+    /// WKWebView; the transient config `+1` is released once the webview holds
+    /// its own reference. On the error path no reference is leaked.
+    ///
+    /// Must be called on the main thread.
+    pub fn initWithSchemeHandler(handler: objc.Object, scheme: [:0]const u8) Error!WebView {
+        const WKWebView = objc.getClass("WKWebView") orelse return Error.ClassNotFound;
+        const WKWebViewConfiguration = objc.getClass("WKWebViewConfiguration") orelse
+            return Error.ClassNotFound;
+        const NSString = objc.getClass("NSString") orelse return Error.ClassNotFound;
+
+        // +1 configuration; released once the webview retains it.
+        const config = WKWebViewConfiguration.msgSend(objc.Object, "alloc", .{})
+            .msgSend(objc.Object, "init", .{});
+        defer config.msgSend(void, "release", .{});
+
+        // Register the scheme handler BEFORE initWithFrame:configuration:.
+        // WebKit freezes the configuration after the webview is created.
+        // +1 NSString for the scheme; released after the registration call.
+        const ns_scheme = nsString(NSString, scheme);
+        defer ns_scheme.msgSend(void, "release", .{});
+        config.msgSend(void, "setURLSchemeHandler:forURLScheme:", .{ handler, ns_scheme });
+
+        // alloc/init -> +1 WKWebView owned by this struct (released in deinit).
+        const ns_webview = WKWebView.msgSend(objc.Object, "alloc", .{})
+            .msgSend(objc.Object, "initWithFrame:configuration:", .{ CGRectZero, config });
+        errdefer ns_webview.msgSend(void, "release", .{});
+
+        ns_webview.msgSend(void, "setInspectable:", .{@as(bool, true)});
+
+        return .{ .ns_webview = ns_webview };
+    }
+
     /// Load a URL via `-[WKWebView loadRequest:]` with an `NSURLRequest` built
     /// from `url` (a NUL-terminated UTF-8 string, e.g. `"http://localhost:5173"`).
     ///
@@ -235,6 +276,18 @@ test "WebView exposes the documented public API surface" {
     try std.testing.expectEqual([:0]const u8, load_url_params[1].type.?);
 
     try std.testing.expectEqual(void, @typeInfo(@TypeOf(WebView.deinit)).@"fn".return_type.?);
+
+    // initWithSchemeHandler: added in M4.1. Pin its return type and its
+    // `scheme` parameter type — a NUL-terminated sentinel slice that gets
+    // passed to NSString stringWithUTF8String:. If either changes, the
+    // scheme handler wiring in root.zig/main.zig must be updated in sync.
+    try std.testing.expect(@hasDecl(WebView, "initWithSchemeHandler"));
+    const InitSchemeRet = @typeInfo(@TypeOf(WebView.initWithSchemeHandler)).@"fn".return_type.?;
+    try std.testing.expectEqual(Error!WebView, InitSchemeRet);
+    // params: [0]=handler: objc.Object, [1]=scheme: [:0]const u8
+    const scheme_params = @typeInfo(@TypeOf(WebView.initWithSchemeHandler)).@"fn".params;
+    try std.testing.expectEqual(objc.Object, scheme_params[0].type.?);
+    try std.testing.expectEqual([:0]const u8, scheme_params[1].type.?);
 }
 
 test "Error set is exactly {ClassNotFound}" {
