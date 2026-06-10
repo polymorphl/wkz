@@ -4,7 +4,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 
 ## Current focus
 
-**M3.2 — `registerHandler` comptime API + request/response correlation.** (M3.1 DONE.)
+**M3.3 — bridge-js TS client `invoke<T>()`, HMR-idempotent.** (M3.1, M3.2 DONE.)
 
 ---
 
@@ -32,7 +32,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 | ID | Task | Status |
 |----|------|--------|
 | 3.1 | `evaluateJavaScript` (nil handler) + `__resolve(id, result)` convention | DONE |
-| 3.2 | `bridge.zig` public API `registerHandler(comptime method, fn)` with request/response correlation | TODO |
+| 3.2 | `bridge.zig` public API `registerHandler(comptime method, fn)` with request/response correlation | DONE |
 | 3.3 | bridge-js TS client `invoke<T>()`, HMR-idempotent (`import.meta.hot.dispose`) | TODO |
 | 3.4 | `-Ddev` wiring + Info.plist `NSAllowsLocalNetworking` documented | TODO |
 | 3.5 | frontend demo round-trip | TODO |
@@ -59,6 +59,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 
 ## Log
 
+- M3.2 — orchestrator — code-reviewer APPROVE (0 findings; defer parsed.deinit() on all paths verified; id extraction else=>null covers float/bool/string/null safely; registerHandler passes comptime slice directly, no copy; DispatchProbe.last_id reset in reset()). test-runner 97/97 ×3. 3 new tests: id:0 passes 0 not null, "id":null → null, registerHandler multi-method routing. Manual checklist M3.2-G1..G4. Committed. → DONE
 - M3.1 — orchestrator — code-reviewer APPROVE (0 findings; ARC clean — NSString +1/defer-released in evaluate, buildResolveJS slice defer-freed in resolve on all paths including nil-webview early-return; webview BORROWED not released in deinit; main.zig untouched — doesn't call Bridge.init yet; allocPrintSentinel return type [:0]u8 verified). test-runner 87/87 ×3. 4 new tests: buildResolveJS double-quote raw-inject contract, minInt(i64), OOM via FailingAllocator, buildResolveJS API surface. Manual checklist M3.1-G1..G4 authored. Committed. → DONE
 - M2.4 — orchestrator — 74/74 tests pass (73 lib + 1 example). adversarial battery: oversized body pre-parse guard, deeply-nested iterative-parse no stack-overflow, i64-overflow number_string, invalid UTF-8, hostile shape matrix (14 cases), duplicate keys, void-boundary swallow. logRejected emits stage/len/prefix only, never full payload. `zig build test --summary all` exit 0. Committed. → DONE
 - M2.3 — orchestrator — code-reviewer APPROVE_WITH_MINORS (no CRITICAL/MAJOR; parse-arena freed on all paths, params borrow call-scoped + documented, static-literal map keys, no panic on malformed, std.json/StringHashMap signatures spot-checked real). 2 MINORs sent back to zig-developer (fix cycle 1): null-`UTF8String` crash guard added; dead `_ = root.get("id")` removed. MINOR#3 (body size-cap) → M2.4. Re-verified green by orchestrator + test-runner 65/65 (seed-independent ×6), 0 impl bugs. Committed. → DONE
@@ -132,6 +133,13 @@ GUI behaviour cannot run under headless `zig build test` (no window server / blo
 - **M2.2-G3 (body shapes):** posting a string / number / object each logs the matching ObjC body class (`__NSCFString` / `__NSCFNumber` / `__NSDictionary…`), confirming body reachable for M2.3 extraction.
 - **M2.2-G4 (ordering):** handler installed (`Bridge.attach`) before page load; a page that posts on load is received (no message lost).
 - **M2.2-G5 (teardown):** Cmd+Q after exercising the bridge quits cleanly (handler deregistered, no abort).
+
+### M3.2 — registerHandler + id-correlation (needs live WKWebView + run loop + loaded page)
+
+- **M3.2-G1 (registerHandler live round-trip):** Post `{method:"echo",params:"hi",id:1}` from JS. Zig `registerHandler("echo", handler)` where handler calls `bridge.resolve(id.?, "\"hi\"")`. Confirm `__resolve(1, "hi")` fires in JS.
+- **M3.2-G2 (id=0 round-trip):** Same but `id:0`. Zig handler receives `id = 0` (not null); JS receives `__resolve(0, ...)`.
+- **M3.2-G3 (fire-and-forget, no id):** Post `{method:"notify"}`. Handler runs; calling `resolve` from it must not crash.
+- **M3.2-G4 (multi-method routing live):** Register `"foo"` and `"bar"`. Post each with distinct ids. Confirm each handler fires for its own call only, replies carry correct id.
 
 ### M3.1 — evaluateJavaScript + resolve (needs live WKWebView + run loop + loaded page)
 

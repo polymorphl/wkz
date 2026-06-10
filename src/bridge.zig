@@ -114,15 +114,19 @@ pub const DispatchError = error{
     UnknownMethod,
 } || std.mem.Allocator.Error;
 
-/// A registered Zig handler for one `method`. Receives the owning `*Bridge` and
-/// the parsed `params` JSON value (`.null` when the message carried no `params`).
+/// A registered Zig handler for one `method`. Receives the owning `*Bridge`,
+/// the parsed `params` JSON value (`.null` when the message carried no `params`),
+/// and an optional `id` for request/response correlation.
 ///
 /// The `params` `Value` borrows the JSON parse arena that owns it; it is valid
 /// only for the duration of this call and must NOT be retained past return (copy
-/// out anything needed longer). M2.3 keeps the signature minimal but
-/// forward-looking: the typed request/response correlation (`id` -> `__resolve`)
-/// is layered on in M3.1/M3.2 without changing this runtime seam.
-pub const Handler = *const fn (bridge: *Bridge, params: std.json.Value) void;
+/// out anything needed longer).
+///
+/// If `id` is non-null, the handler may call `bridge.resolve(id.?, result)` to
+/// reply to the JS caller. When `id` is null the message is fire-and-forget
+/// (JS did not provide a correlation id) — calling `resolve` in that case is
+/// undefined at the application level (there is no waiting caller).
+pub const Handler = *const fn (bridge: *Bridge, params: std.json.Value, id: ?i64) void;
 
 /// The runtime dispatch table: `method` name -> Zig `Handler`.
 ///
@@ -331,14 +335,37 @@ pub const Bridge = struct {
     /// `Bridge`'s lifetime — wkz registers static string literals, which satisfy
     /// this trivially. Returns `Allocator.Error` if the map cannot grow.
     ///
-    /// This is the M2.3 runtime registration seam. The comptime-typed
-    /// `registerHandler(comptime method, fn)` public API (which derives the
-    /// param/return types and wires the `__resolve` response path) is M3.2 and
-    /// layers on top of this table without changing it.
+    /// This is the M2.3 runtime registration seam. `registerHandler` (M3.2) is
+    /// the preferred public API and layers on top of this without changing it.
     pub fn addHandler(self: *Bridge, method: []const u8, handler: Handler) std.mem.Allocator.Error!void {
         // HashMap.put (hash_map.zig:322): put(self, key, value) !void. Does not
         // copy the key (StringHashMap keys are caller-managed).
         try self.dispatch.put(method, handler);
+    }
+
+    /// Public API: register a handler for a comptime-known `method` name.
+    ///
+    /// The `comptime method` parameter enforces that the method string is a
+    /// static literal known at compile time, which satisfies the
+    /// `std.StringHashMap` "keys are not copied" contract by construction — it
+    /// is impossible for a caller to pass a dynamically allocated slice whose
+    /// lifetime is shorter than the `Bridge`. This is the only difference from
+    /// `addHandler`; the runtime behaviour is identical.
+    ///
+    /// The `handler` parameter is also comptime so callers get a compile-time
+    /// error if the function signature does not match `Handler`
+    /// (`fn(*Bridge, std.json.Value, ?i64) void`).
+    ///
+    /// For M3.2 the handler signature is the same as `Handler` — comptime
+    /// derivation of typed param/return structs is deferred to M4+.
+    ///
+    /// Returns `Allocator.Error` if the dispatch table cannot grow.
+    pub fn registerHandler(
+        self: *Bridge,
+        comptime method: []const u8,
+        comptime handler: fn (bridge: *Bridge, params: std.json.Value, id: ?i64) void,
+    ) std.mem.Allocator.Error!void {
+        try self.addHandler(method, handler);
     }
 
     /// Evaluate a JavaScript expression in the webview. The `js` argument is a
@@ -463,8 +490,13 @@ pub const Bridge = struct {
             else => return DispatchError.MissingMethod,
         };
 
-        // `id` (optional): not read in M2.3 (no reply path yet). M3.1/M3.2 will
-        // read it here to correlate the `__resolve(id, result)` response.
+        // `id` (optional): present and integer → extract as i64 for RPC
+        // correlation; absent, null, or wrong type → null (fire-and-forget).
+        // ObjectMap.get (array_hash_map.zig:613) returns ?Value.
+        const id: ?i64 = if (root.get("id")) |id_val| switch (id_val) {
+            .integer => |n| n,
+            else => null,
+        } else null;
 
         // `params` (optional, arbitrary JSON): default to .null when absent so
         // the handler always receives a well-formed Value.
@@ -474,7 +506,7 @@ pub const Bridge = struct {
         // returns ?Handler.
         const handler = self.dispatch.get(method) orelse return DispatchError.UnknownMethod;
 
-        handler(self, params);
+        handler(self, params, id);
     }
 
     /// Finish wiring the bridge now that it lives at its final, stable address:
@@ -838,15 +870,19 @@ const DispatchProbe = struct {
     fn reset() void {
         fired = false;
         saw_string = null;
+        last_id = null;
     }
 
-    /// Handler that records it ran and copies a `params.name` string (if the
-    /// params is an object with a string `name`) into a static buffer. We copy
-    /// because the params Value borrows the parse arena, which is freed once
-    /// dispatchSlice returns.
-    fn record(bridge: *Bridge, params: std.json.Value) void {
+    /// Handler that records it ran, the received `id`, and copies a `params.name`
+    /// string (if the params is an object with a string `name`) into a static
+    /// buffer. We copy because the params Value borrows the parse arena, which is
+    /// freed once dispatchSlice returns.
+    var last_id: ?i64 = null;
+
+    fn record(bridge: *Bridge, params: std.json.Value, id: ?i64) void {
         _ = bridge;
         fired = true;
+        last_id = id;
         switch (params) {
             .object => |obj| {
                 if (obj.get("name")) |v| switch (v) {
@@ -961,7 +997,7 @@ test "addHandler: last registration for a method wins" {
 
     const First = struct {
         var ran: bool = false;
-        fn h(_: *Bridge, _: std.json.Value) void {
+        fn h(_: *Bridge, _: std.json.Value, _: ?i64) void {
             ran = true;
         }
     };
@@ -1024,7 +1060,7 @@ const NestedProbe = struct {
     /// Reads params.list (an array of integers) and params.obj.deep (a nested
     /// string), copying the string out (it borrows the parse arena). Proves
     /// arrays and multi-level objects reach the handler intact through dispatch.
-    fn record(_: *Bridge, params: std.json.Value) void {
+    fn record(_: *Bridge, params: std.json.Value, _: ?i64) void {
         fired = true;
         const obj = switch (params) {
             .object => |o| o,
@@ -1095,7 +1131,7 @@ const ShapeProbe = struct {
 
     /// Records that it ran and the active union tag of whatever `params` was,
     /// without assuming any shape. Proves dispatch does NOT validate param type.
-    fn record(_: *Bridge, params: std.json.Value) void {
+    fn record(_: *Bridge, params: std.json.Value, _: ?i64) void {
         fired = true;
         tag = std.meta.activeTag(params);
         switch (params) {
@@ -1146,13 +1182,13 @@ test "dispatchSlice: with multiple handlers registered, method routes to the mat
         var one: bool = false;
         var two: bool = false;
         var three: bool = false;
-        fn h1(_: *Bridge, _: std.json.Value) void {
+        fn h1(_: *Bridge, _: std.json.Value, _: ?i64) void {
             one = true;
         }
-        fn h2(_: *Bridge, _: std.json.Value) void {
+        fn h2(_: *Bridge, _: std.json.Value, _: ?i64) void {
             two = true;
         }
-        fn h3(_: *Bridge, _: std.json.Value) void {
+        fn h3(_: *Bridge, _: std.json.Value, _: ?i64) void {
             three = true;
         }
     };
@@ -1193,7 +1229,7 @@ test "deinit frees a populated dispatch table (no leak with N registered handler
     defer bridge.deinit();
 
     const Noop = struct {
-        fn h(_: *Bridge, _: std.json.Value) void {}
+        fn h(_: *Bridge, _: std.json.Value, _: ?i64) void {}
     };
     try bridge.addHandler("alpha", Noop.h);
     try bridge.addHandler("bravo", Noop.h);
@@ -1595,6 +1631,244 @@ test "resolve allocates, calls evaluate with correct JS, and frees (nil webview 
     // the allocate-evaluate-free cycle completes cleanly.
 }
 
+// =====================================================================
+// M3.2 — registerHandler + id correlation tests
+// =====================================================================
+
+test "dispatchSlice: id present as integer is passed to handler" {
+    var bridge = try makeTestBridge();
+    defer bridge.deinit();
+    try bridge.addHandler("ping", DispatchProbe.record);
+
+    DispatchProbe.reset();
+    try bridge.dispatchSlice(
+        \\{"method":"ping","params":{},"id":7}
+    );
+    try std.testing.expect(DispatchProbe.fired);
+    try std.testing.expectEqual(@as(?i64, 7), DispatchProbe.last_id);
+}
+
+test "dispatchSlice: id absent → handler receives null id" {
+    var bridge = try makeTestBridge();
+    defer bridge.deinit();
+    try bridge.addHandler("ping", DispatchProbe.record);
+
+    DispatchProbe.reset();
+    try bridge.dispatchSlice(
+        \\{"method":"ping","params":{}}
+    );
+    try std.testing.expect(DispatchProbe.fired);
+    try std.testing.expectEqual(@as(?i64, null), DispatchProbe.last_id);
+}
+
+test "dispatchSlice: id present but non-integer → handler receives null id" {
+    // A non-integer id (e.g. a string "abc") must be treated as fire-and-forget:
+    // the handler receives null, not a crash or error. The id field is silently
+    // ignored for unrecognised types.
+    var bridge = try makeTestBridge();
+    defer bridge.deinit();
+    try bridge.addHandler("ping", DispatchProbe.record);
+
+    DispatchProbe.reset();
+    try bridge.dispatchSlice(
+        \\{"method":"ping","id":"abc"}
+    );
+    try std.testing.expect(DispatchProbe.fired);
+    try std.testing.expectEqual(@as(?i64, null), DispatchProbe.last_id);
+
+    // Also test id as a JSON object (another non-integer type).
+    DispatchProbe.reset();
+    try bridge.dispatchSlice(
+        \\{"method":"ping","id":{"nested":true}}
+    );
+    try std.testing.expect(DispatchProbe.fired);
+    try std.testing.expectEqual(@as(?i64, null), DispatchProbe.last_id);
+
+    // And id as a boolean.
+    DispatchProbe.reset();
+    try bridge.dispatchSlice(
+        \\{"method":"ping","id":true}
+    );
+    try std.testing.expect(DispatchProbe.fired);
+    try std.testing.expectEqual(@as(?i64, null), DispatchProbe.last_id);
+}
+
+test "dispatchSlice: id present and handler calls buildResolveJS → correct JS string" {
+    // Verify the full resolve path: handler receives a non-null id and uses it
+    // to build the correct __resolve JS string. We test `buildResolveJS` directly
+    // (the pure Zig path) to avoid ObjC/WebKit in the headless suite — this is
+    // sufficient since `resolve` itself is already covered by its own test.
+    const ResolveProbe = struct {
+        var got_id: ?i64 = null;
+        var resolved_js: [128]u8 = undefined;
+        var resolved_js_len: usize = 0;
+
+        fn handler(b: *Bridge, _: std.json.Value, id: ?i64) void {
+            got_id = id;
+            if (id) |real_id| {
+                // Build the resolve JS string (pure Zig, headless-safe).
+                const js = Bridge.buildResolveJS(real_id, "42", b.allocator) catch return;
+                defer b.allocator.free(js);
+                const n = @min(js.len, resolved_js.len);
+                @memcpy(resolved_js[0..n], js[0..n]);
+                resolved_js_len = n;
+            }
+        }
+    };
+    ResolveProbe.got_id = null;
+    ResolveProbe.resolved_js_len = 0;
+
+    var bridge = try makeTestBridge();
+    defer bridge.deinit();
+    try bridge.addHandler("echo", ResolveProbe.handler);
+
+    try bridge.dispatchSlice(
+        \\{"method":"echo","params":"hello","id":5}
+    );
+    try std.testing.expectEqual(@as(?i64, 5), ResolveProbe.got_id);
+    try std.testing.expectEqualStrings(
+        "__resolve(5, 42)",
+        ResolveProbe.resolved_js[0..ResolveProbe.resolved_js_len],
+    );
+}
+
+test "registerHandler: comptime method routes correctly" {
+    // registerHandler is a thin comptime wrapper over addHandler. Verify it
+    // registers and routes identically to addHandler.
+    var bridge = try makeTestBridge();
+    defer bridge.deinit();
+
+    const Probe = struct {
+        var fired: bool = false;
+        fn handler(_: *Bridge, _: std.json.Value, _: ?i64) void {
+            fired = true;
+        }
+    };
+    Probe.fired = false;
+
+    try bridge.registerHandler("comptime_method", Probe.handler);
+
+    try bridge.dispatchSlice(
+        \\{"method":"comptime_method"}
+    );
+    try std.testing.expect(Probe.fired);
+}
+
+test "registerHandler: comptime method with id passed through" {
+    // Confirm registerHandler-registered handlers receive the id correctly.
+    var bridge = try makeTestBridge();
+    defer bridge.deinit();
+
+    const Probe = struct {
+        var got_id: ?i64 = null;
+        fn handler(_: *Bridge, _: std.json.Value, id: ?i64) void {
+            got_id = id;
+        }
+    };
+    Probe.got_id = null;
+
+    try bridge.registerHandler("rpc_call", Probe.handler);
+
+    try bridge.dispatchSlice(
+        \\{"method":"rpc_call","id":42}
+    );
+    try std.testing.expectEqual(@as(?i64, 42), Probe.got_id);
+}
+
+test "Bridge exposes registerHandler as a public decl" {
+    try std.testing.expect(@hasDecl(Bridge, "registerHandler"));
+    // Return type is Allocator.Error!void — same as addHandler.
+    const Ret = @typeInfo(@TypeOf(Bridge.registerHandler)).@"fn".return_type.?;
+    try std.testing.expectEqual(std.mem.Allocator.Error!void, Ret);
+}
+
+test "dispatchSlice: id present as zero passes 0 to handler, not null" {
+    // Zero is a valid correlation id. A naive `if (id_val == 0)` guard would
+    // collapse it to null — this test pins that `id:0` arrives as `?i64 = 0`,
+    // not as `null`.
+    var bridge = try makeTestBridge();
+    defer bridge.deinit();
+    try bridge.addHandler("zero_id", DispatchProbe.record);
+
+    DispatchProbe.reset();
+    try bridge.dispatchSlice(
+        \\{"method":"zero_id","id":0}
+    );
+    try std.testing.expect(DispatchProbe.fired);
+    try std.testing.expectEqual(@as(?i64, 0), DispatchProbe.last_id);
+}
+
+test "dispatchSlice: id present as JSON null → handler receives null id" {
+    // JSON `"id":null` is an explicit null — not an integer, so the id extraction
+    // switch falls through to the `else => null` arm and the handler sees no id.
+    var bridge = try makeTestBridge();
+    defer bridge.deinit();
+    try bridge.addHandler("null_id", DispatchProbe.record);
+
+    DispatchProbe.reset();
+    try bridge.dispatchSlice(
+        \\{"method":"null_id","id":null}
+    );
+    try std.testing.expect(DispatchProbe.fired);
+    try std.testing.expectEqual(@as(?i64, null), DispatchProbe.last_id);
+}
+
+test "registerHandler: multiple comptime methods route to their respective handlers only" {
+    // The single-method registerHandler tests do not prove the hashmap lookup
+    // discriminates. Register three methods via registerHandler and confirm that
+    // dispatching each method fires exactly that handler and no other.
+    const MultiReg = struct {
+        var alpha: bool = false;
+        var beta: bool = false;
+        var gamma: bool = false;
+
+        fn hAlpha(_: *Bridge, _: std.json.Value, _: ?i64) void {
+            alpha = true;
+        }
+        fn hBeta(_: *Bridge, _: std.json.Value, _: ?i64) void {
+            beta = true;
+        }
+        fn hGamma(_: *Bridge, _: std.json.Value, _: ?i64) void {
+            gamma = true;
+        }
+    };
+    MultiReg.alpha = false;
+    MultiReg.beta = false;
+    MultiReg.gamma = false;
+
+    var bridge = try makeTestBridge();
+    defer bridge.deinit();
+    try bridge.registerHandler("alpha", MultiReg.hAlpha);
+    try bridge.registerHandler("beta", MultiReg.hBeta);
+    try bridge.registerHandler("gamma", MultiReg.hGamma);
+
+    // Route to "beta" only.
+    try bridge.dispatchSlice(
+        \\{"method":"beta"}
+    );
+    try std.testing.expect(!MultiReg.alpha);
+    try std.testing.expect(MultiReg.beta);
+    try std.testing.expect(!MultiReg.gamma);
+
+    // Route to "gamma"; alpha still false, beta still true.
+    try bridge.dispatchSlice(
+        \\{"method":"gamma"}
+    );
+    try std.testing.expect(!MultiReg.alpha);
+    try std.testing.expect(MultiReg.gamma);
+
+    // Route to "alpha"; all three now true.
+    try bridge.dispatchSlice(
+        \\{"method":"alpha"}
+    );
+    try std.testing.expect(MultiReg.alpha);
+
+    // An unregistered name still returns UnknownMethod, nothing extra fires.
+    try std.testing.expectError(DispatchError.UnknownMethod, bridge.dispatchSlice(
+        \\{"method":"delta"}
+    ));
+}
+
 // --- API-surface / type contract (compile-time) ---
 
 test "Error set includes ClassNotFound and the Allocator errors" {
@@ -1629,6 +1903,9 @@ test "Bridge exposes the documented public API surface" {
 
     const AddRet = @typeInfo(@TypeOf(Bridge.addHandler)).@"fn".return_type.?;
     try std.testing.expectEqual(std.mem.Allocator.Error!void, AddRet);
+
+    const RegRet = @typeInfo(@TypeOf(Bridge.registerHandler)).@"fn".return_type.?;
+    try std.testing.expectEqual(std.mem.Allocator.Error!void, RegRet);
 
     const DispatchRet = @typeInfo(@TypeOf(Bridge.dispatchSlice)).@"fn".return_type.?;
     try std.testing.expectEqual(DispatchError!void, DispatchRet);
