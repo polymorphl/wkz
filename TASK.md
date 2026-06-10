@@ -4,7 +4,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 
 ## Current focus
 
-**M3.4 — `-Ddev` wiring + `NSAllowsLocalNetworking`.** (M3.1–M3.3 DONE.)
+**M3.5 — frontend demo round-trip.** (M3.1–M3.4 DONE.)
 
 ---
 
@@ -34,7 +34,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 | 3.1 | `evaluateJavaScript` (nil handler) + `__resolve(id, result)` convention | DONE |
 | 3.2 | `bridge.zig` public API `registerHandler(comptime method, fn)` with request/response correlation | DONE |
 | 3.3 | bridge-js TS client `invoke<T>()`, HMR-idempotent (`import.meta.hot.dispose`) | DONE |
-| 3.4 | `-Ddev` wiring + Info.plist `NSAllowsLocalNetworking` documented | TODO |
+| 3.4 | `-Ddev` wiring + Info.plist `NSAllowsLocalNetworking` documented | DONE |
 | 3.5 | frontend demo round-trip | TODO |
 
 ## M4 — Bundle
@@ -59,6 +59,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 
 ## Log
 
+- M3.4 — orchestrator — code-reviewer APPROVE (0 CRITICAL/MAJOR; 1 NOTE: nil NSURL from malformed URL silently no-ops — ObjC messaging nil is safe, acceptable for M3.4). test-runner 102/102 ×6, `zig build -Ddev=true` exit 0. API surface test extended: @hasDecl(loadURL), return-type pin, param-type pin [:0]const u8. NSAllowsLocalNetworking comment added in main.zig. Manual checklist M3.4-G1..G5. Committed. → DONE
 - M3.3 — orchestrator — typecheck exit 0. __resolve global installed as side-effect; invoke<T> monotonic id + pending Map; HMR dispose rejects pending + deletes global; outside-WKWebView rejects immediately; JSON.parse failure rejects promise; unknown id → console.warn no-op; id wraps at MAX_SAFE_INTEGER. Local ViteHotContext augmentation avoids vite devDep. Manual checklist M3.3-G1..G7. Committed. → DONE
 - M3.3 — zig-developer — implemented `bridge-js/src/index.ts`: `__resolve` global (installed as side-effect), `invoke<T>()` with monotonic id, pending Map, HMR dispose teardown. Added `bridge-js/tsconfig.json`. Local `ViteHotContext`/`ImportMeta` augmentation avoids vite devDependency. `npm run typecheck` exit 0. → DONE
 - M3.2 — orchestrator — code-reviewer APPROVE (0 findings; defer parsed.deinit() on all paths verified; id extraction else=>null covers float/bool/string/null safely; registerHandler passes comptime slice directly, no copy; DispatchProbe.last_id reset in reset()). test-runner 97/97 ×3. 3 new tests: id:0 passes 0 not null, "id":null → null, registerHandler multi-method routing. Manual checklist M3.2-G1..G4. Committed. → DONE
@@ -135,6 +136,14 @@ GUI behaviour cannot run under headless `zig build test` (no window server / blo
 - **M2.2-G3 (body shapes):** posting a string / number / object each logs the matching ObjC body class (`__NSCFString` / `__NSCFNumber` / `__NSDictionary…`), confirming body reachable for M2.3 extraction.
 - **M2.2-G4 (ordering):** handler installed (`Bridge.attach`) before page load; a page that posts on load is received (no message lost).
 - **M2.2-G5 (teardown):** Cmd+Q after exercising the bridge quits cleanly (handler deregistered, no abort).
+
+### M3.4 — `-Ddev` wiring (needs Vite dev server + run loop)
+
+- **M3.4-G1 (Vite reachable):** `cd frontend && npm run dev` then `zig build run -Ddev=true` → webview shows Vite page at `localhost:5173`.
+- **M3.4-G2 (server down graceful):** Vite NOT running + `zig build run -Ddev=true` → webview shows navigation error page, no crash/abort.
+- **M3.4-G3 (branch live):** `zig build run` (no `-Ddev`) → inline "wkz" dark page. `zig build run -Ddev=true` → Vite URL. Confirm branch is active.
+- **M3.4-G4 (NSString release):** After `loadURL`, exercise bridge + Cmd+Q → no double-free abort.
+- **M3.4-G5 (no over-release):** Quit after `loadURL` → no over-release abort for nsurl/request (autoreleased, not released by us).
 
 ### M3.3 — bridge-js invoke<T> (needs live WKWebView + Vite dev server + run loop)
 

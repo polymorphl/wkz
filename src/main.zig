@@ -54,7 +54,14 @@ pub fn main() !void {
     // already exist — which it does, by the ordering above.
     const webview = try wkz.webview.WebView.init();
     webview.attach(window);
-    try webview.loadHTMLString(hello_html);
+    if (build_options.dev) {
+        // Dev mode: load the Vite dev server. Requires NSAllowsLocalNetworking=YES
+        // in Info.plist when running as a sandboxed .app bundle (M4). Under
+        // `zig build run` (no sandbox), the connection works without it.
+        try webview.loadURL("http://localhost:5173");
+    } else {
+        try webview.loadHTMLString(hello_html);
+    }
 
     // Foreground the app, then enter the AppKit run loop. `run()` blocks until
     // the user quits (Cmd+Q -> `terminate:`), and AppKit's `terminate:` exits

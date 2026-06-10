@@ -121,6 +121,35 @@ pub const WebView = struct {
         return config.msgSend(objc.Object, "userContentController", .{});
     }
 
+    /// Load a URL via `-[WKWebView loadRequest:]` with an `NSURLRequest` built
+    /// from `url` (a NUL-terminated UTF-8 string, e.g. `"http://localhost:5173"`).
+    ///
+    /// Ownership:
+    /// - `NSString` from `nsString()`: `+1` (stringWithUTF8String: + retain).
+    ///   Released via `defer` before this function returns.
+    /// - `NSURL` from `+[NSURL URLWithString:]`: **autoreleased** (`+0` from our
+    ///   perspective — we did not alloc/new/copy/retain it). Do NOT release it.
+    /// - `NSURLRequest` from `+[NSURLRequest requestWithURL:]`: **autoreleased**
+    ///   (`+0`). Do NOT release it.
+    ///
+    /// Must be called on the main thread.
+    pub fn loadURL(self: WebView, url: [:0]const u8) Error!void {
+        const NSString = objc.getClass("NSString") orelse return Error.ClassNotFound;
+        const NSURL = objc.getClass("NSURL") orelse return Error.ClassNotFound;
+        const NSURLRequest = objc.getClass("NSURLRequest") orelse return Error.ClassNotFound;
+
+        // +1 NSString; we own this and release it before returning.
+        const ns_url_str = nsString(NSString, url);
+        defer ns_url_str.msgSend(void, "release", .{});
+
+        // Autoreleased (+0): factory convenience method, not alloc/new/copy/retain.
+        // WKWebView retains the request internally; we must NOT release it.
+        const nsurl = NSURL.msgSend(objc.Object, "URLWithString:", .{ns_url_str});
+        const request = NSURLRequest.msgSend(objc.Object, "requestWithURL:", .{nsurl});
+
+        self.ns_webview.msgSend(void, "loadRequest:", .{request});
+    }
+
     /// Load an inline HTML page via `-[WKWebView loadHTMLString:baseURL:]`.
     /// `base_url` is passed as nil (no relative-URL resolution base), which is
     /// fine for self-contained HTML. The HTML NSString is built transiently and
@@ -192,6 +221,18 @@ test "WebView exposes the documented public API surface" {
 
     const LoadRet = @typeInfo(@TypeOf(WebView.loadHTMLString)).@"fn".return_type.?;
     try std.testing.expectEqual(Error!void, LoadRet);
+
+    // loadURL: added in M3.4.  @hasDecl proves it is on the type at compile
+    // time; the return-type pin below keeps the Error!void contract visible here
+    // as well as in the dedicated loadURL test.
+    try std.testing.expect(@hasDecl(WebView, "loadURL"));
+    const LoadURLRet = @typeInfo(@TypeOf(WebView.loadURL)).@"fn".return_type.?;
+    try std.testing.expectEqual(Error!void, LoadURLRet);
+    // Parameter 1 (index 1, after self) must be [:0]const u8 — a NUL-terminated
+    // UTF-8 string.  If this changes, main.zig string literals would silently
+    // become incompatible.
+    const load_url_params = @typeInfo(@TypeOf(WebView.loadURL)).@"fn".params;
+    try std.testing.expectEqual([:0]const u8, load_url_params[1].type.?);
 
     try std.testing.expectEqual(void, @typeInfo(@TypeOf(WebView.deinit)).@"fn".return_type.?);
 }
@@ -394,6 +435,52 @@ test "loadHTMLString() tolerates adversarial input headless" {
     defer std.testing.allocator.free(big);
     @memset(big, 'a');
     try wv.loadHTMLString(big);
+}
+
+// --- loadURL: class resolution + selector verification (headless-safe) ---
+
+test "NSURL and NSURLRequest classes resolve in the runtime" {
+    // Pure runtime class lookups — no network, no window server.
+    try std.testing.expect(objc.getClass("NSURL") != null);
+    try std.testing.expect(objc.getClass("NSURLRequest") != null);
+}
+
+test "NSURL class responds to URLWithString: (class method)" {
+    // `URLWithString:` is a class method (convenience constructor), so we query
+    // the class object itself with `respondsToSelector:`, not
+    // `instancesRespondToSelector:` (which only covers instance methods).
+    const NSURL = objc.getClass("NSURL").?;
+    try std.testing.expect(NSURL.msgSend(
+        bool,
+        "respondsToSelector:",
+        .{objc.sel("URLWithString:").value},
+    ));
+}
+
+test "NSURLRequest class responds to requestWithURL: (class method)" {
+    // Same reasoning: `requestWithURL:` is a class convenience constructor.
+    const NSURLRequest = objc.getClass("NSURLRequest").?;
+    try std.testing.expect(NSURLRequest.msgSend(
+        bool,
+        "respondsToSelector:",
+        .{objc.sel("requestWithURL:").value},
+    ));
+}
+
+test "WKWebView instances respond to loadRequest:" {
+    const WKWebView = objc.getClass("WKWebView").?;
+    try std.testing.expect(WKWebView.msgSend(
+        bool,
+        "instancesRespondToSelector:",
+        .{objc.sel("loadRequest:").value},
+    ));
+}
+
+test "loadURL return type is WebView.Error!void" {
+    // Compile-time pin: if the return type changes, this test breaks and the
+    // caller (main.zig) will need to be updated in sync.
+    const LoadURLRet = @typeInfo(@TypeOf(WebView.loadURL)).@"fn".return_type.?;
+    try std.testing.expectEqual(Error!void, LoadURLRet);
 }
 
 test {
