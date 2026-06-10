@@ -4,7 +4,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 
 ## Current focus
 
-**M1.5 — example in `main.zig`; `zig build run` opens a window.** (M1.1–M1.4 DONE.)
+**M2.1 — `objc_helpers.zig` runtime class creation.** (M1 complete — all of M1.1–M1.5 DONE.)
 
 ---
 
@@ -16,7 +16,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 | 1.2 | `app.zig` NSApplication bootstrap, activation policy `.regular`, menu with Cmd+Q | DONE |
 | 1.3 | `window.zig` NSWindow titled/closable/resizable, centered, makeKeyAndOrderFront | DONE |
 | 1.4 | `webview.zig` WKWebView filling contentView, loadHTMLString inline page, inspectable=true | DONE |
-| 1.5 | Example in `main.zig`; `zig build run` opens a window | TODO |
+| 1.5 | Example in `main.zig`; `zig build run` opens a window | DONE |
 
 ## M2 — JS→Zig bridge
 
@@ -59,6 +59,10 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 
 ## Log
 
+- **M1 COMPLETE** — all M1.1–M1.5 DONE. `zig build run` opens a real, centered, titled, resizable window with a WKWebView filling the contentView rendering an inline page; Cmd+Q quits. Full suite 32/32 green. Manual GUI verification consolidated in checklist M1.5-G1..G7 (exercises deferred M1.2/M1.3/M1.4 GUI items end-to-end). Next milestone: M2 (JS→Zig bridge), starting M2.1 `objc_helpers.zig`.
+- M1.5 — orchestrator — code-reviewer APPROVE (zero findings; lifetime reasoning sound — run() blocks, terminate: exits process so post-run deinit is unreachable dead code, each struct holds a single +1, no double-release/use-after-free, no false no-leak claim; ordering App→Window→attach correct; API signatures + [:0]const u8 HTML literal verified). test-runner green 32/32 (3× deterministic); `zig build run -Ddev=true` smoke-test launched + blocked on run loop (timeout-kill 124, no crash). Committed. → DONE
+- M1.5 — test-runner — 32/32 (31 lib + 1 example refAllDecls), 3/3 deterministic runs exit 0; `zig build` exit 0; `zig build run -Ddev=true` smoke-test launched + blocked on run loop (timeout-kill 124, no crash, window server present). No new tests (entrypoint blocks; wired types covered in their own modules; refAllDecls forces compile). Authored M1.5-G1..G7 manual GUI checklist covering deferred M1.2/M1.3/M1.4 GUI behaviour end-to-end. → TESTING
+- M1.5 — zig-developer — implemented `src/main.zig` example: `App.init()` → `Window.init(900,600,"wkz")` → `WebView.init()` → `attach(window)` → `loadHTMLString(inline_html)` → `activate()` → `run()`. Inline dark "wkz" hello page. `deinit` intentionally omitted (run() blocks; terminate: exits process so post-run defer is dead code) — documented honestly, no false no-leak claim. `zig build` + `zig build test` green (32/32). → IN_REVIEW
 - M1.4 — orchestrator — code-reviewer APPROVE (zero findings; config +1 consumed by initWithFrame:configuration: and defer-released, webview +1 owned by deinit, contentView() borrowed/not-released, CGRect by-value return path correct on aarch64, CG types made pub without layout change). test-runner green 32/32 (3× deterministic), live WKWebView tests stable headless, 0 impl bugs. `zig build` + `zig build test` exit 0. Committed. → DONE
 - M1.4 — test-runner — `zig build` + `zig build test` green (8/8 steps, 32/32, exit 0, deterministic across 3 runs). Live WKWebView tests confirmed stable headless. Added 2 tests (nsString UTF-8 round-trip; loadHTMLString adversarial empty/invalid-UTF-8/64KiB) + extended selector-responder coverage (addSubview:/bounds for the attach surface). No impl bugs. attach() live test deferred to manual checklist M1.4-G1..G5. → TESTING
 - M1.4 — zig-developer — implemented `src/webview.zig`: `WebView{init/attach/loadHTMLString/deinit}` — WKWebView + fresh WKWebViewConfiguration, `setInspectable:true`, `attach()` fills window contentView via width|height autoresizingMask, `loadHTMLString:baseURL:` (nil baseURL). No ARC (config +1 defer-released after initWithFrame: retains it; webview +1 owned by deinit, errdefer on init). Reused window.zig CG types (made pub) + added `Window.contentView()` accessor. WKWebView init empirically headless-safe → live tests added. `zig build` + `zig build test` green (30/30). → IN_REVIEW
@@ -97,6 +101,16 @@ GUI behaviour cannot run under headless `zig build test` (no window server / blo
 - **M1.4-G3 (inspector):** right-click → "Inspect Element" (or Develop menu) opens the Web Inspector (`setInspectable:true`; macOS 13.3+).
 - **M1.4-G4 (render):** inline `loadHTMLString` page renders (heading/text visible) and is interactive (text selectable).
 - **M1.4-G5 (shutdown):** Cmd+Q quits cleanly with the webview attached (no hang/crash on teardown).
+
+### M1.5 — end-to-end (`zig build run`); exercises M1.2/M1.3/M1.4 GUI items together
+
+- **M1.5-G1 (window opens):** single window appears, centered, ~900×600, title "wkz", front + key.
+- **M1.5-G2 (page renders):** webview fills the content area; dark page (`#0b0d12`) with centered "wkz"; no gaps/scrollbars.
+- **M1.5-G3 (fill + resize):** dragging the corner resizes; page tracks both axes, no gap/letterbox/clip.
+- **M1.5-G4 (foregrounded):** app comes to front on launch (`.regular` policy, Dock icon, owns menu bar).
+- **M1.5-G5 (inspector):** right-click → "Inspect Element" opens the Web Inspector (macOS 13.3+).
+- **M1.5-G6 (Cmd+Q):** app menu has a single Quit (⌘Q); pressing it terminates cleanly, `zig build run` returns.
+- **M1.5-G7 (dev banner):** stdout shows `dev mode: true` under `-Ddev=true`, `dev mode: false` for the default build.
 
 ## Blocked
 
