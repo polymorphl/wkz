@@ -47,7 +47,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "objc", .module = objc },
-            .{ .name = "build_options", .module = build_options },
         },
     });
     // All AppKit/WebKit calls happen on the main thread; these links make the
