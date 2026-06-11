@@ -3,10 +3,19 @@ const std = @import("std");
 // wkz — pure-Zig macOS desktop shell library.
 //
 // Build graph:
-//   * module "wkz"      — the library, root src/root.zig
-//   * executable "wkz"  — the runnable example, root src/main.zig
-//   * build option -Ddev — surfaced to source via the "build_options" module
-//   * test step         — runs `test` blocks of both the library and the example
+//   * module "wkz"        — the library, root src/root.zig
+//   * executable "wkz"    — the runnable example, root src/main.zig
+//   * build option -Ddev  — surfaced to source via the "build_options" module
+//   * test step           — runs `test` blocks of both the library and the example
+//
+// Asset pipeline (prod, -Ddev=false):
+//   1. npm run build in frontend/ → frontend/dist/
+//   2. gen_assets (tools/gen_assets.zig) walks dist/ and emits src/dist_assets.zig
+//      with one @embedFile entry per asset, keyed by relative path + MIME type.
+//   3. dist_assets module is added to the exe so main.zig can @import("dist_assets").
+//
+// Dev mode (-Ddev=true): a stub dist_assets module (empty AssetMap) is added
+// instead, so the @import("dist_assets") in main.zig always compiles.
 //
 // Only third-party dependency: zig-objc (module name "objc"), pinned by hash in
 // build.zig.zon. It links Foundation + libobjc and wires the Apple SDK paths for
@@ -62,6 +71,70 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+
+    // Asset pipeline: always add a "dist_assets" module to the exe so that
+    // `@import("dist_assets")` in main.zig compiles in both dev and prod.
+    //
+    // Dev: stub module with an empty AssetMap — npm build is never run.
+    // Prod: npm run build → gen_assets → generated Zig source with @embedFile entries.
+    if (dev) {
+        // Stub: empty AssetMap, no npm build, no @embedFile.
+        // b.addWriteFiles().add: Build/Step/WriteFile.zig:104
+        const stub = b.addWriteFiles();
+        const stub_file = stub.add("dist_assets.zig",
+            \\const wkz = @import("wkz");
+            \\pub const asset_map = wkz.scheme.AssetMap{ .entries = &.{} };
+            \\
+        );
+        const dist_assets_mod = b.createModule(.{
+            .root_source_file = stub_file,
+            .imports = &.{.{ .name = "wkz", .module = wkz }},
+        });
+        exe.root_module.addImport("dist_assets", dist_assets_mod);
+    } else {
+        // Step 1: run `npm run build` in frontend/ to produce frontend/dist/.
+        // addSystemCommand + setCwd: Build/Step/Run.zig:535
+        const npm_build = b.addSystemCommand(&.{ "npm", "run", "build" });
+        npm_build.setCwd(b.path("frontend"));
+
+        // Step 2: build the gen_assets code-generator executable.
+        // It runs on the host (build machine), not the target.
+        // addExecutable: Build.zig:787 — takes root_module: *Module
+        // b.graph.host: Build.zig:126 — ResolvedTarget for the host
+        const gen_assets_mod = b.createModule(.{
+            .root_source_file = b.path("tools/gen_assets.zig"),
+            .target = b.resolveTargetQuery(.{}), // native host
+            .optimize = .Debug,
+        });
+        const gen_assets_exe = b.addExecutable(.{
+            .name = "gen_assets",
+            .root_module = gen_assets_mod,
+        });
+
+        // Step 3: run gen_assets to produce the generated Zig source.
+        // gen_run.step depends on npm_build so Vite runs first.
+        // addRunArtifact: Build.zig:934
+        // addArg: Build/Step/Run.zig:518
+        // addOutputDirectoryArg: Build/Step/Run.zig:419 — returns LazyPath (directory)
+        const gen_run = b.addRunArtifact(gen_assets_exe);
+        gen_run.step.dependOn(&npm_build.step);
+        // Pass the absolute dist_dir path.
+        // b.pathFromRoot: Build.zig:1770 — returns []u8 (absolute)
+        gen_run.addArg(b.pathFromRoot("frontend/dist"));
+        // The output directory basename. The build system manages the cache path.
+        // gen_assets copies assets + writes dist_assets.zig into this directory.
+        const dist_assets_dir = gen_run.addOutputDirectoryArg("dist_assets_dir");
+
+        // Step 4: create the dist_assets module from the generated file and
+        // wire it into the exe. It imports wkz so the AssetMap type resolves.
+        // LazyPath.path: Build.zig:2432 — path(lazy_path, b, sub_path) LazyPath
+        const dist_assets_mod = b.createModule(.{
+            .root_source_file = dist_assets_dir.path(b, "dist_assets.zig"),
+            .imports = &.{.{ .name = "wkz", .module = wkz }},
+        });
+        exe.root_module.addImport("dist_assets", dist_assets_mod);
+    }
+
     b.installArtifact(exe);
 
     const run_step = b.step("run", "Run the example app");
@@ -77,7 +150,19 @@ pub fn build(b: *std.Build) void {
     const exe_tests = b.addTest(.{ .root_module = exe.root_module });
     const run_exe_tests = b.addRunArtifact(exe_tests);
 
+    // Tests for tools/gen_assets.zig (pure-Zig, no ObjC, host target).
+    // gen_assets_mod is already defined above in the prod branch; rebuild a
+    // fresh module here so the test step is independent of the -Ddev flag.
+    const gen_assets_test_mod = b.createModule(.{
+        .root_source_file = b.path("tools/gen_assets.zig"),
+        .target = b.resolveTargetQuery(.{}), // native host
+        .optimize = .Debug,
+    });
+    const gen_assets_tests = b.addTest(.{ .root_module = gen_assets_test_mod });
+    const run_gen_assets_tests = b.addRunArtifact(gen_assets_tests);
+
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&run_lib_tests.step);
     test_step.dependOn(&run_exe_tests.step);
+    test_step.dependOn(&run_gen_assets_tests.step);
 }

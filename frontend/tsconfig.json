@@ -18,6 +18,7 @@
     "paths": {
       "@wkz/bridge": ["../bridge-js/src/index.ts"]
     },
+    "ignoreDeprecations": "6.0",
 
     /* Linting */
     "noUnusedLocals": true,

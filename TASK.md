@@ -42,7 +42,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 | ID | Task | Status |
 |----|------|--------|
 | 4.1 | `scheme.zig` WKURLSchemeHandler serving embedded `dist/` at `app://local` | DONE |
-| 4.2 | Build step runs `vite build` + embeds output, zero external assets | TODO |
+| 4.2 | Build step runs `vite build` + embeds output, zero external assets | DONE |
 | 4.3 | `.app` bundle generation (`Contents/MacOS`, Info.plist) | TODO |
 | 4.4 | Ad-hoc codesign, launches from Finder | TODO |
 
@@ -59,6 +59,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 
 ## Log
 
+- M4.2 — orchestrator — code-reviewer APPROVE_WITH_MINORS (MINOR#1: mimeForExt sync comment vs scheme.zig:mimeForPath; MINOR#2: UnsafeAssetPath guard for `"` and `\` in rel_path). Both fixes applied. test-runner 122/122 (8 new tests: mimeForExt table, adversarial suffix matching, isUnsafePath contract, sync drift-guard vs scheme.zig; gen_assets added to test_step). `zig build` exit 0 (npm + gen_assets + embed). `zig build -Ddev=true` exit 0. Manual checklist M4.2-M1..M6. Committed. → DONE
 - M4.1 — orchestrator — code-reviewer APPROVE_WITH_MINORS (MAJOR: AssetEntry.mime []const u8 → [:0]const u8 to eliminate unsound @ptrCast; MINOR#1: log.warn on null URL path; MINOR#2: nsString helper [:0]const u8 alignment). Fix cycle 1 applied. test-runner 114/114 ×4. 3 new tests: AssetEntry.mime sentinel-type pin, AssetMap.get unknown-path contract (7 variants), initWithSchemeHandler API surface pin. Manual checklist MC-S1..S4. Committed. → DONE
 - M3.5 — orchestrator — main.zig: DebugAllocator + Bridge.init/attach + registerHandler("ping"→"pong") wired before loadURL; frontend: vite.config.ts alias (new URL, no __dirname), tsconfig paths + include vite.config.ts, main.ts invoke<string>("ping") demo, style.css dark minimal. Both typechecks exit 0. 102/102 tests, zig build -Ddev=true exit 0. Committed. → DONE
 - M3.4 — orchestrator — code-reviewer APPROVE (0 CRITICAL/MAJOR; 1 NOTE: nil NSURL from malformed URL silently no-ops — ObjC messaging nil is safe, acceptable for M3.4). test-runner 102/102 ×6, `zig build -Ddev=true` exit 0. API surface test extended: @hasDecl(loadURL), return-type pin, param-type pin [:0]const u8. NSAllowsLocalNetworking comment added in main.zig. Manual checklist M3.4-G1..G5. Committed. → DONE
@@ -138,6 +139,15 @@ GUI behaviour cannot run under headless `zig build test` (no window server / blo
 - **M2.2-G3 (body shapes):** posting a string / number / object each logs the matching ObjC body class (`__NSCFString` / `__NSCFNumber` / `__NSDictionary…`), confirming body reachable for M2.3 extraction.
 - **M2.2-G4 (ordering):** handler installed (`Bridge.attach`) before page load; a page that posts on load is received (no message lost).
 - **M2.2-G5 (teardown):** Cmd+Q after exercising the bridge quits cleanly (handler deregistered, no abort).
+
+### M4.2 — Prod asset serving (needs `zig build` + binary run, window server)
+
+- **M4.2-M1 (Vite invoked + binary exists):** `zig build` prints Vite build summary; `zig-out/bin/wkz` exists; `otool -L` shows no external asset file dependencies.
+- **M4.2-M2 (app:// loads page):** `./zig-out/bin/wkz` (no Vite running) opens window, page renders correctly. Network tab shows `app://local/…` requests with 200, not `localhost:5173`.
+- **M4.2-M3 (MIME types):** Web Inspector Network: `index.html` → `text/html; charset=utf-8`; `.js` → `application/javascript; charset=utf-8`; `.css` → `text/css; charset=utf-8`.
+- **M4.2-M4 (404 path):** `fetch("app://local/does-not-exist.txt")` rejects with network error; stdout shows `[wkz_scheme] (warn): asset not found:` line.
+- **M4.2-M5 (bridge ping/pong prod):** ping/pong demo works when served via `app://`.
+- **M4.2-M6 (incremental rebuild):** Edit `frontend/src/main.ts`, run `zig build` again; binary re-links; new content appears in app.
 
 ### M4.1 — Scheme handler live behavior (needs `zig build run`, window server)
 
