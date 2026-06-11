@@ -117,6 +117,10 @@ pub fn build(b: *std.Build) void {
         // addArg: Build/Step/Run.zig:518
         // addOutputDirectoryArg: Build/Step/Run.zig:419 — returns LazyPath (directory)
         const gen_run = b.addRunArtifact(gen_assets_exe);
+        // has_side_effects = true: dist/ content can change without changing
+        // the argv, so we must always re-run gen_assets to pick up fresh Vite
+        // output. The exe compilation is still cached when dist/ is unchanged.
+        gen_run.has_side_effects = true;
         gen_run.step.dependOn(&npm_build.step);
         // Pass the absolute dist_dir path.
         // b.pathFromRoot: Build.zig:1770 — returns []u8 (absolute)
