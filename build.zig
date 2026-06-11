@@ -137,6 +137,64 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(exe);
 
+    // .app bundle (prod + dev both get the bundle layout).
+    // `b.installArtifact(exe)` above installs to `zig-out/bin/wkz`, which is
+    // what `zig build run` resolves via addRunArtifact. The `install_exe` below
+    // installs the same artifact a second time into the bundle. Both outputs are
+    // intentional and always identical — the Zig build system compiles the
+    // artifact once and copies it to both destinations.
+    //
+    // Verified APIs (Build.zig / Build/Step/InstallArtifact.zig, Zig 0.16.0):
+    //   addInstallArtifact(b, artifact, Options) *Step.InstallArtifact  — line 1666
+    //     Options.dest_dir: Dir = .default  — InstallArtifact.zig:40
+    //     Dir = union(enum){ disabled, default, override: InstallDir }  — line 52
+    //     InstallDir = union(enum){ prefix, lib, bin, header, custom: []const u8 }
+    //                                                              — Build.zig:2667
+    //   addInstallFile(b, source: LazyPath, dest_rel_path) *Step.InstallFile  — line 1698
+    //     (installs relative to install prefix, i.e. zig-out/)
+    //   addWriteFiles().add(sub_path, bytes) LazyPath  — WriteFile.zig:104
+
+    // Generate Info.plist content.
+    const plist_content =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        \\<plist version="1.0">
+        \\<dict>
+        \\    <key>CFBundleName</key>
+        \\    <string>wkz</string>
+        \\    <key>CFBundleIdentifier</key>
+        \\    <string>com.wkz.example</string>
+        \\    <key>CFBundleVersion</key>
+        \\    <string>0.1.0</string>
+        \\    <key>CFBundleShortVersionString</key>
+        \\    <string>0.1.0</string>
+        \\    <key>CFBundleExecutable</key>
+        \\    <string>wkz</string>
+        \\    <key>CFBundlePackageType</key>
+        \\    <string>APPL</string>
+        \\    <key>NSAllowsLocalNetworking</key>
+        \\    <true/>
+        \\    <key>NSHighResolutionCapable</key>
+        \\    <true/>
+        \\</dict>
+        \\</plist>
+        \\
+    ;
+    const wf = b.addWriteFiles();
+    const plist_lazy_path = wf.add("Info.plist", plist_content);
+
+    // Install executable into wkz.app/Contents/MacOS/wkz (relative to zig-out/).
+    const install_exe = b.addInstallArtifact(exe, .{
+        .dest_dir = .{ .override = .{ .custom = "wkz.app/Contents/MacOS" } },
+    });
+    b.getInstallStep().dependOn(&install_exe.step);
+
+    // Install Info.plist into wkz.app/Contents/Info.plist (relative to zig-out/).
+    // Sibling of MacOS/ — required by the .app bundle spec; CFBundleExecutable
+    // must match the binary name at Contents/MacOS/.
+    const install_plist = b.addInstallFile(plist_lazy_path, "wkz.app/Contents/Info.plist");
+    b.getInstallStep().dependOn(&install_plist.step);
+
     const run_step = b.step("run", "Run the example app");
     const run_cmd = b.addRunArtifact(exe);
     run_step.dependOn(&run_cmd.step);

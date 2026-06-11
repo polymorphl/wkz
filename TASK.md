@@ -4,7 +4,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 
 ## Current focus
 
-**M4.2 — Build step: `vite build` + embed `dist/`.** (M4.1 DONE.)
+**M4.4 — Ad-hoc codesign, launches from Finder.** (M4.1–M4.3 DONE.)
 
 ---
 
@@ -43,7 +43,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 |----|------|--------|
 | 4.1 | `scheme.zig` WKURLSchemeHandler serving embedded `dist/` at `app://local` | DONE |
 | 4.2 | Build step runs `vite build` + embeds output, zero external assets | DONE |
-| 4.3 | `.app` bundle generation (`Contents/MacOS`, Info.plist) | TODO |
+| 4.3 | `.app` bundle generation (`Contents/MacOS`, Info.plist) | DONE |
 | 4.4 | Ad-hoc codesign, launches from Finder | TODO |
 
 ## M5 — v0.1
@@ -59,6 +59,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 
 ## Log
 
+- M4.3 — orchestrator — code-reviewer APPROVE_WITH_MINORS (MINOR#1: dual-install comment; MINOR#2: plist/bundle-spec sibling comment). Both comment fixes applied by orchestrator. test-runner 122/122. Bundle: `zig-out/wkz.app/Contents/MacOS/wkz` + `Info.plist`, `plutil -lint` OK, CFBundleExecutable matches binary. Manual checklist M4.3-B1..B8. Committed. → DONE
 - M4.2 — orchestrator — code-reviewer APPROVE_WITH_MINORS (MINOR#1: mimeForExt sync comment vs scheme.zig:mimeForPath; MINOR#2: UnsafeAssetPath guard for `"` and `\` in rel_path). Both fixes applied. test-runner 122/122 (8 new tests: mimeForExt table, adversarial suffix matching, isUnsafePath contract, sync drift-guard vs scheme.zig; gen_assets added to test_step). `zig build` exit 0 (npm + gen_assets + embed). `zig build -Ddev=true` exit 0. Manual checklist M4.2-M1..M6. Committed. → DONE
 - M4.1 — orchestrator — code-reviewer APPROVE_WITH_MINORS (MAJOR: AssetEntry.mime []const u8 → [:0]const u8 to eliminate unsound @ptrCast; MINOR#1: log.warn on null URL path; MINOR#2: nsString helper [:0]const u8 alignment). Fix cycle 1 applied. test-runner 114/114 ×4. 3 new tests: AssetEntry.mime sentinel-type pin, AssetMap.get unknown-path contract (7 variants), initWithSchemeHandler API surface pin. Manual checklist MC-S1..S4. Committed. → DONE
 - M3.5 — orchestrator — main.zig: DebugAllocator + Bridge.init/attach + registerHandler("ping"→"pong") wired before loadURL; frontend: vite.config.ts alias (new URL, no __dirname), tsconfig paths + include vite.config.ts, main.ts invoke<string>("ping") demo, style.css dark minimal. Both typechecks exit 0. 102/102 tests, zig build -Ddev=true exit 0. Committed. → DONE
@@ -187,6 +188,17 @@ GUI behaviour cannot run under headless `zig build test` (no window server / blo
 - **M3.1-G2 (resolve round-trip):** From JS, post `{method:"echo",id:5,params:"hello"}`. Zig handler calls `bridge.resolve(5, "\"hello\"")`. Confirm `__resolve(5, "hello")` executes in JS (log or promise resolution).
 - **M3.1-G3 (evaluate syntax error):** Call `bridge.evaluate("this is not JS ///")`. Process must not crash (WebKit drops JS error silently with nil handler).
 - **M3.1-G4 (resolve post-navigation):** After loading a new page, call `bridge.resolve(1, "true")`. Must not crash.
+
+### M4.3 — .app bundle launch (needs Finder / open(1), window server)
+
+- **M4.3-B1 (bundle structure):** `zig-out/wkz.app/Contents/MacOS/wkz` exists and is a Mach-O arm64 executable; `zig-out/wkz.app/Contents/Info.plist` exists and passes `plutil -lint`. (Verified headlessly — listed here for completeness.)
+- **M4.3-B2 (open from Finder):** Double-click `zig-out/wkz.app` in Finder → app launches, window appears, no "damaged/can't be opened" gatekeeper rejection (unsigned; may require right-click → Open on first run until M4.4 codesign).
+- **M4.3-B3 (open(1) from terminal):** `open zig-out/wkz.app` → process starts, window appears, exits cleanly on Cmd+Q.
+- **M4.3-B4 (bundle identity):** While running, Activity Monitor shows process name "wkz" (from `CFBundleName`); `CFBundleIdentifier` "com.wkz.example" visible in `lsappinfo` output.
+- **M4.3-B5 (CFBundleExecutable match):** `CFBundleExecutable` value "wkz" exactly matches the binary name at `Contents/MacOS/wkz`; launch does not fail with "The application's Info.plist does not contain a CFBundleExecutable key" error.
+- **M4.3-B6 (Retina / HiDPI):** Window renders crisp on a Retina display (`NSHighResolutionCapable = true`); no blurry/doubled pixel rendering.
+- **M4.3-B7 (bin/wkz still works):** `./zig-out/bin/wkz` (flat binary, not the bundle) still launches and behaves identically — confirms `b.installArtifact` + `addInstallArtifact` both remain wired.
+- **M4.3-B8 (incremental rebuild idempotent):** Run `zig build` twice in a row with no source changes; second run exits 0, bundle paths unchanged, binary SHA unchanged.
 
 ## Blocked
 
