@@ -4,7 +4,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 
 ## Current focus
 
-**M5.2 — README.** (M5.1 DONE.)
+M5.3 — CI macos runner. (M5.2 DONE.)
 
 ---
 
@@ -51,7 +51,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 | ID | Task | Status |
 |----|------|--------|
 | 5.1 | API review (naming, ownership docs, error sets) | DONE |
-| 5.2 | README with Zig pin on first screen | TODO |
+| 5.2 | README with Zig pin on first screen | DONE |
 | 5.3 | CI macos runner with `mlugg/setup-zig` | TODO |
 | 5.4 | Tag `v0.1.0` | TODO |
 
@@ -59,6 +59,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 
 ## Log
 
+- M5.2 — orchestrator — code-reviewer APPROVE (0 findings; Zig pin on first screen, architecture table, dependency section with commit hash, design rules all verified accurate vs CLAUDE.md). Committed. → DONE
 - M5.1 — orchestrator — code-reviewer APPROVE_WITH_MINORS (MINOR: assert comment misleading for ReleaseSafe; assert wording fixed). 121/122 (1 skipped: nil-ivar debug-panic test correct). Changes: addHandler private, debug.assert on unattached bridge, evaluate log.warn, mimeForPath [:0]const u8, deinit by-value, root.zig doc, ownership/routing comments. Committed. → DONE
 - M4.4 — orchestrator — code-reviewer APPROVE (0 findings; dependency ordering, bundle path, flags, dev-build isolation, test-step isolation all verified). test-runner 122/122; codesign "valid on disk". Manual checklist M4.4-F1..F3. Committed. → DONE
 - M4.3 — orchestrator — code-reviewer APPROVE_WITH_MINORS (MINOR#1: dual-install comment; MINOR#2: plist/bundle-spec sibling comment). Both comment fixes applied by orchestrator. test-runner 122/122. Bundle: `zig-out/wkz.app/Contents/MacOS/wkz` + `Info.plist`, `plutil -lint` OK, CFBundleExecutable matches binary. Manual checklist M4.3-B1..B8. Committed. → DONE
