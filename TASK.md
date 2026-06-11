@@ -4,7 +4,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 
 ## Current focus
 
-M5.4 — Tag v0.1.0. (M5.3 DONE.)
+M5 COMPLETE. All milestones DONE.
 
 ---
 
@@ -53,12 +53,13 @@ M5.4 — Tag v0.1.0. (M5.3 DONE.)
 | 5.1 | API review (naming, ownership docs, error sets) | DONE |
 | 5.2 | README with Zig pin on first screen | DONE |
 | 5.3 | CI macos runner with `mlugg/setup-zig` | DONE |
-| 5.4 | Tag `v0.1.0` | TODO |
+| 5.4 | Tag `v0.1.0` | DONE |
 
 ---
 
 ## Log
 
+- M5.4 — orchestrator — tagged v0.1.0, pushed main + tag to origin. → DONE
 - M5.3 — orchestrator — CI workflow verified pre-existing from M1.1 scaffold: macos-latest, mlugg/setup-zig@v2, version: 0.16.0, push+PR triggers, zig build + zig build test. No changes needed. → DONE
 - M5.2 — orchestrator — code-reviewer APPROVE (0 findings; Zig pin on first screen, architecture table, dependency section with commit hash, design rules all verified accurate vs CLAUDE.md). Committed. → DONE
 - M5.1 — orchestrator — code-reviewer APPROVE_WITH_MINORS (MINOR: assert comment misleading for ReleaseSafe; assert wording fixed). 121/122 (1 skipped: nil-ivar debug-panic test correct). Changes: addHandler private, debug.assert on unattached bridge, evaluate log.warn, mimeForPath [:0]const u8, deinit by-value, root.zig doc, ownership/routing comments. Committed. → DONE
