@@ -263,7 +263,8 @@ fn impStart(
     // The task URL is also needed as an NSURL object for NSHTTPURLResponse.
     const request = task_obj.msgSend(objc.Object, "request", .{});
     const url_obj = request.msgSend(objc.Object, "URL", .{});
-    const path_cstr = url_obj.msgSend(?[*:0]const u8, "path", .{});
+    const path_nsstr = url_obj.msgSend(objc.Object, "path", .{});
+    const path_cstr = path_nsstr.msgSend(?[*:0]const u8, "UTF8String", .{});
     if (path_cstr == null) {
         log.warn("scheme handler: non-UTF8 or missing URL path; dropping with 404", .{});
     }
