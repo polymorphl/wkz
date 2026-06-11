@@ -195,6 +195,20 @@ pub fn build(b: *std.Build) void {
     const install_plist = b.addInstallFile(plist_lazy_path, "wkz.app/Contents/Info.plist");
     b.getInstallStep().dependOn(&install_plist.step);
 
+    // Ad-hoc codesign so the .app bundle can be launched from Finder without
+    // the "unidentified developer" Gatekeeper blocker on the developer's own
+    // machine.  Identity "-" means ad-hoc (no Apple Developer account required).
+    //
+    // Verified APIs (Zig 0.16.0):
+    //   addSystemCommand(b: *Build, argv: []const []const u8) *Step.Run  — Build.zig:927
+    //   addArg(run: *Run, arg: []const u8) void                          — Run.zig:518
+    //   getInstallPath(b: *Build, dir: InstallDir, rel: []const u8) []const u8 — Build.zig:1928
+    const codesign = b.addSystemCommand(&.{ "codesign", "--force", "--deep", "--sign", "-" });
+    codesign.addArg(b.getInstallPath(.prefix, "wkz.app"));
+    codesign.step.dependOn(&install_exe.step);
+    codesign.step.dependOn(&install_plist.step);
+    b.getInstallStep().dependOn(&codesign.step);
+
     const run_step = b.step("run", "Run the example app");
     const run_cmd = b.addRunArtifact(exe);
     run_step.dependOn(&run_cmd.step);

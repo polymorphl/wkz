@@ -4,7 +4,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 
 ## Current focus
 
-**M4.4 — Ad-hoc codesign, launches from Finder.** (M4.1–M4.3 DONE.)
+**M5.1 — API review.** (M4 complete.)
 
 ---
 
@@ -44,7 +44,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 | 4.1 | `scheme.zig` WKURLSchemeHandler serving embedded `dist/` at `app://local` | DONE |
 | 4.2 | Build step runs `vite build` + embeds output, zero external assets | DONE |
 | 4.3 | `.app` bundle generation (`Contents/MacOS`, Info.plist) | DONE |
-| 4.4 | Ad-hoc codesign, launches from Finder | TODO |
+| 4.4 | Ad-hoc codesign, launches from Finder | DONE |
 
 ## M5 — v0.1
 
@@ -59,6 +59,7 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 
 ## Log
 
+- M4.4 — orchestrator — code-reviewer APPROVE (0 findings; dependency ordering, bundle path, flags, dev-build isolation, test-step isolation all verified). test-runner 122/122; codesign "valid on disk". Manual checklist M4.4-F1..F3. Committed. → DONE
 - M4.3 — orchestrator — code-reviewer APPROVE_WITH_MINORS (MINOR#1: dual-install comment; MINOR#2: plist/bundle-spec sibling comment). Both comment fixes applied by orchestrator. test-runner 122/122. Bundle: `zig-out/wkz.app/Contents/MacOS/wkz` + `Info.plist`, `plutil -lint` OK, CFBundleExecutable matches binary. Manual checklist M4.3-B1..B8. Committed. → DONE
 - M4.2 — orchestrator — code-reviewer APPROVE_WITH_MINORS (MINOR#1: mimeForExt sync comment vs scheme.zig:mimeForPath; MINOR#2: UnsafeAssetPath guard for `"` and `\` in rel_path). Both fixes applied. test-runner 122/122 (8 new tests: mimeForExt table, adversarial suffix matching, isUnsafePath contract, sync drift-guard vs scheme.zig; gen_assets added to test_step). `zig build` exit 0 (npm + gen_assets + embed). `zig build -Ddev=true` exit 0. Manual checklist M4.2-M1..M6. Committed. → DONE
 - M4.1 — orchestrator — code-reviewer APPROVE_WITH_MINORS (MAJOR: AssetEntry.mime []const u8 → [:0]const u8 to eliminate unsound @ptrCast; MINOR#1: log.warn on null URL path; MINOR#2: nsString helper [:0]const u8 alignment). Fix cycle 1 applied. test-runner 114/114 ×4. 3 new tests: AssetEntry.mime sentinel-type pin, AssetMap.get unknown-path contract (7 variants), initWithSchemeHandler API surface pin. Manual checklist MC-S1..S4. Committed. → DONE
@@ -199,6 +200,12 @@ GUI behaviour cannot run under headless `zig build test` (no window server / blo
 - **M4.3-B6 (Retina / HiDPI):** Window renders crisp on a Retina display (`NSHighResolutionCapable = true`); no blurry/doubled pixel rendering.
 - **M4.3-B7 (bin/wkz still works):** `./zig-out/bin/wkz` (flat binary, not the bundle) still launches and behaves identically — confirms `b.installArtifact` + `addInstallArtifact` both remain wired.
 - **M4.3-B8 (incremental rebuild idempotent):** Run `zig build` twice in a row with no source changes; second run exits 0, bundle paths unchanged, binary SHA unchanged.
+
+### M4.4 — Ad-hoc codesign (needs Finder + Gatekeeper, window server)
+
+- **M4.4-F1 (no Gatekeeper rejection):** Double-click `zig-out/wkz.app` in Finder. App must launch directly without "Apple cannot verify…" or "move to Trash" dialog. Ad-hoc signing suppresses the unsigned-binary sheet on the developer's own machine.
+- **M4.4-F2 (open(1) silent):** `open zig-out/wkz.app` → process starts, window appears, `echo $?` returns 0. No `LSOpenURLsWithRole() failed` error.
+- **M4.4-F3 (signature survives incremental rebuild):** Run `zig build` twice with no changes; second run exits 0 and `codesign -vvv zig-out/wkz.app` still reports "valid on disk".
 
 ## Blocked
 
