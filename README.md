@@ -53,6 +53,44 @@ The only external dependency is **[mitchellh/zig-objc](https://github.com/mitche
 4. **Allocator-first.** Every allocating function takes an `Allocator`.
 5. **`-Ddev` is the dev/prod switch**, never a runtime env branch.
 
+## Using wkz as a dependency
+
+Add to your `build.zig.zon`:
+
+```zig
+.dependencies = .{
+    .wkz = .{
+        .url = "https://github.com/polymorphl/wkz/archive/v0.1.0.tar.gz",
+        .hash = "<run zig fetch --save to fill this in>",
+    },
+},
+```
+
+Wire it in `build.zig`:
+
+```zig
+const wkz_dep = b.dependency("wkz", .{ .target = target, .optimize = optimize });
+exe.root_module.addImport("wkz", wkz_dep.module("wkz"));
+// AppKit, WebKit, Foundation, libobjc are linked transitively — nothing else needed.
+```
+
+Then in your Zig source:
+
+```zig
+const wkz = @import("wkz");
+// wkz.app.App, wkz.window.Window, wkz.webview.WebView, wkz.bridge.Bridge, wkz.scheme ...
+```
+
+wkz is a pure macOS/ObjC layer — no frontend or build pipeline is imposed. Load content however you like: `loadHTMLString`, `loadURL` to a dev server, or wire up your own `SchemeHandler` for embedded assets.
+
+A working example is in [`examples/minimal/`](examples/minimal/) — it uses a local path dependency so you can test it directly from this repo:
+
+```sh
+cd examples/minimal
+zig build        # compiles
+zig build run    # opens a window with "Hello from wkz"
+```
+
 ## Status
 
 Pre-v0.1, built milestone by milestone — see `TASK.md`. **Not production ready.**
