@@ -17,7 +17,9 @@
 
 declare global {
   // Installed by this module; called by Zig via evaluateJavaScript.
-  function __resolve(id: number, result: string): void;
+  // `result` is the raw JS value passed by Zig — a string, number, or object
+  // depending on the JS expression Zig evaluates.
+  function __resolve(id: number, result: unknown): void;
 
   interface Window {
     webkit?: {
@@ -52,7 +54,7 @@ let nextId = 0;
 // __resolve global (Zig -> JS reply path)
 // ---------------------------------------------------------------------------
 
-globalThis.__resolve = function __resolve(id: number, result: string): void {
+globalThis.__resolve = function __resolve(id: number, result: unknown): void {
   const pending = pendingCalls.get(id);
   if (pending === undefined) {
     console.warn(`@wkz/bridge: __resolve received unknown id=${id} (already resolved, rejected, or never sent)`);
@@ -60,16 +62,7 @@ globalThis.__resolve = function __resolve(id: number, result: string): void {
   }
 
   pendingCalls.delete(id);
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(result);
-  } catch (err) {
-    pending.reject(new Error(`@wkz/bridge: __resolve(${id}) — invalid JSON in result: ${String(err)}`));
-    return;
-  }
-
-  pending.resolve(parsed);
+  pending.resolve(result);
 };
 
 // ---------------------------------------------------------------------------

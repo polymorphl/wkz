@@ -13,12 +13,11 @@
     "moduleDetection": "force",
     "noEmit": true,
 
-    /* Path aliases */
-    "baseUrl": ".",
+    /* Path aliases — resolved by vite (vite.config.ts resolve.alias).
+       TS uses `paths` only for type-checking; no baseUrl needed in TS 6. */
     "paths": {
       "@wkz/bridge": ["../bridge-js/src/index.ts"]
     },
-    "ignoreDeprecations": "6.0",
 
     /* Linting */
     "noUnusedLocals": true,
