@@ -85,6 +85,9 @@ pub const WebView = struct {
     /// keep filling on resize (width|height autoresizing). The contentView
     /// retains the webview when it is added; we still own our `+1` reference
     /// (released in `deinit`). Must be called on the main thread.
+    ///
+    /// The `window` argument is not consumed — the caller retains ownership and
+    /// must keep the `Window` alive for as long as the webview is attached.
     pub fn attach(self: WebView, window: win.Window) void {
         const content_view = window.contentView();
 
@@ -112,6 +115,10 @@ pub const WebView = struct {
     /// the returned controller takes effect for this webview. The returned
     /// reference is owned by the configuration/webview, not the caller: do NOT
     /// release it. Must be called on the main thread.
+    ///
+    /// Note: pointer identity with the live routing controller was verified in a
+    /// headless test (webview.zig tests), but live message routing through this
+    /// controller has only been confirmed manually (see checklist M2.2-G2).
     ///
     /// Ordering note: a handler must be installed BEFORE content that posts to it
     /// is loaded — `addScriptMessageHandler:name:` only affects content loaded

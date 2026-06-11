@@ -1,11 +1,14 @@
-//! wkz — public API surface of the library.
+//! wkz public API surface.
 //!
-//! Responsibility: re-export the stable, supported types/functions so consumers
-//! write `@import("wkz")` and nothing deeper. Internal modules
-//! (objc_helpers, scheme, ...) stay private unless promoted here.
+//! Re-exports the supported types and functions from the wkz library modules.
+//! Consumers import this as `@import("wkz")`.
 //!
-//! Nothing is implemented yet — this is the M1.1 scaffold. Real API lands in
-//! M1.2+ and is documented per-declaration with ownership rules.
+//! Exported namespaces:
+//!   - `app`     — NSApplication bootstrap (`App.init`, `activate`, `run`)
+//!   - `window`  — NSWindow creation (`Window.init`, `setTitle`, `deinit`)
+//!   - `webview` — WKWebView management (`WebView.init`, `attach`, `loadURL`, …)
+//!   - `bridge`  — JS↔Zig typed bridge (`Bridge.init`, `registerHandler`, …)
+//!   - `scheme`  — `app://` scheme handler (`SchemeHandler`, `AssetMap`, `mimeForPath`)
 
 const std = @import("std");
 

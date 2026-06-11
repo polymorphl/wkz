@@ -134,7 +134,7 @@ pub const SchemeHandler = struct {
 
     /// Release the owned `+1` handler instance. After this the `SchemeHandler`
     /// is dead. Must be called on the main thread.
-    pub fn deinit(self: *SchemeHandler) void {
+    pub fn deinit(self: SchemeHandler) void {
         self.handler.msgSend(void, "release", .{});
     }
 };
@@ -145,7 +145,7 @@ pub const SchemeHandler = struct {
 
 /// Map a file path's extension to a MIME type. Falls back to
 /// `application/octet-stream` for unknown extensions. Pure Zig, no ObjC.
-pub fn mimeForPath(path: []const u8) []const u8 {
+pub fn mimeForPath(path: []const u8) [:0]const u8 {
     if (std.mem.endsWith(u8, path, ".html")) return "text/html; charset=utf-8";
     if (std.mem.endsWith(u8, path, ".js")) return "application/javascript; charset=utf-8";
     if (std.mem.endsWith(u8, path, ".css")) return "text/css; charset=utf-8";

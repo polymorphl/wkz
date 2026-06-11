@@ -290,6 +290,9 @@ pub const Bridge = struct {
     /// process (idempotent). On success the returned `Bridge` owns a `+1` handler
     /// reference that `deinit` releases; on the error path nothing is leaked.
     ///
+    /// Must be followed by `attach()` before any content is loaded; forgetting
+    /// `attach` will silently drop all messages in release builds.
+    ///
     /// IMPORTANT: the IMP recovers the context by the *address* stored in the
     /// handler's ivar. `init` does NOT write that ivar — it cannot know the final
     /// address of a by-value return, which the caller will move into its own
@@ -336,8 +339,8 @@ pub const Bridge = struct {
     /// this trivially. Returns `Allocator.Error` if the map cannot grow.
     ///
     /// This is the M2.3 runtime registration seam. `registerHandler` (M3.2) is
-    /// the preferred public API and layers on top of this without changing it.
-    pub fn addHandler(self: *Bridge, method: []const u8, handler: Handler) std.mem.Allocator.Error!void {
+    /// the only public registration API; `addHandler` is private.
+    fn addHandler(self: *Bridge, method: []const u8, handler: Handler) std.mem.Allocator.Error!void {
         // HashMap.put (hash_map.zig:322): put(self, key, value) !void. Does not
         // copy the key (StringHashMap keys are caller-managed).
         try self.dispatch.put(method, handler);
@@ -345,12 +348,14 @@ pub const Bridge = struct {
 
     /// Public API: register a handler for a comptime-known `method` name.
     ///
+    /// This is the **only public registration API**. `addHandler` is private.
+    ///
     /// The `comptime method` parameter enforces that the method string is a
     /// static literal known at compile time, which satisfies the
     /// `std.StringHashMap` "keys are not copied" contract by construction — it
     /// is impossible for a caller to pass a dynamically allocated slice whose
     /// lifetime is shorter than the `Bridge`. This is the only difference from
-    /// `addHandler`; the runtime behaviour is identical.
+    /// the internal `addHandler`; the runtime behaviour is identical.
     ///
     /// The `handler` parameter is also comptime so callers get a compile-time
     /// error if the function signature does not match `Handler`
@@ -377,7 +382,10 @@ pub const Bridge = struct {
     /// retain`, and released via `defer` on the one return path. Must be called on
     /// the main thread (WebKit requirement).
     pub fn evaluate(self: *Bridge, js: [:0]const u8) void {
-        const NSString = objc.getClass("NSString") orelse return;
+        const NSString = objc.getClass("NSString") orelse {
+            log.warn("bridge: NSString class not found; evaluate is a no-op", .{});
+            return;
+        };
         const ns_js = nsString(NSString, js);
         defer ns_js.msgSend(void, "release", .{});
         // evaluateJavaScript:completionHandler: (WKWebView). The second arg is a
@@ -605,7 +613,11 @@ fn impUserContentControllerDidReceive(
     // Bridge.attach.
     const ctx = handler.getInstanceVariable(ctx_ivar_name);
     if (ctx.value == null) {
-        // No context wired (e.g. handler fired before attach()): nothing to do.
+        // No context wired — Bridge.attach() was never called (programming error).
+        // std.debug.assert(false) panics in .Debug and .ReleaseSafe; in
+        // .ReleaseFast/.ReleaseSmall the assert is elided and the message is
+        // dropped safely (log.warn + return below).
+        std.debug.assert(false);
         log.warn("dropped message: no context attached (stage=extraction)", .{});
         return;
     }
@@ -712,12 +724,14 @@ test "handler instances do NOT respond to an unregistered selector (negative con
 
 test "the IMP nil-ivar guard returns without dereferencing an unwired context" {
     // A handler instance fresh from alloc/init has its wkz_ctx ivar zero-init'd
-    // (no attach() ran). If the IMP fired in that window (e.g. a message arrived
-    // before attach), it must hit the `ctx.value == null` guard and return — NOT
-    // @ptrCast a null and dereference it. We invoke the IMP directly against such
-    // an unwired handler; reaching the end without crashing IS the assertion. The
-    // message arg is nil too: the guard returns before -body is ever sent, so a
-    // nil message can never be touched on this path.
+    // (no attach() ran). In DEBUG builds, hitting the null-ivar path fires
+    // `std.debug.assert(false)` (a programming-error signal — see Bridge.init
+    // doc). In RELEASE builds the assert is a no-op and the IMP drops the message
+    // safely. This test only runs in non-debug modes; in debug mode the panic is
+    // the expected (and desired) behavior.
+    const builtin = @import("builtin");
+    if (builtin.mode == .Debug) return error.SkipZigTest;
+
     const cls = try handlerClass();
     const handler = cls.msgSend(objc.Object, "alloc", .{})
         .msgSend(objc.Object, "init", .{});
@@ -726,8 +740,8 @@ test "the IMP nil-ivar guard returns without dereferencing an unwired context" {
     // Confirm the precondition: the ivar really is null on a fresh instance.
     try std.testing.expect(handler.getInstanceVariable(ctx_ivar_name).value == null);
 
-    // Must return early via the guard; if it instead dereferenced the null ctx
-    // or sent -body to the nil message, this would crash the test process.
+    // In release mode the assert is elided; the guard logs + returns safely
+    // without dereferencing the null or touching the nil message.
     impUserContentControllerDidReceive(
         handler.value,
         objc.sel("userContentController:didReceiveScriptMessage:").value,
@@ -1901,8 +1915,9 @@ test "Bridge exposes the documented public API surface" {
     const AttachRet = @typeInfo(@TypeOf(Bridge.attach)).@"fn".return_type.?;
     try std.testing.expectEqual(Error!void, AttachRet);
 
-    const AddRet = @typeInfo(@TypeOf(Bridge.addHandler)).@"fn".return_type.?;
-    try std.testing.expectEqual(std.mem.Allocator.Error!void, AddRet);
+    // addHandler is private; only registerHandler is the public registration API.
+    // (From within the same file @hasDecl sees private decls too, so we only
+    //  assert the public one here.)
 
     const RegRet = @typeInfo(@TypeOf(Bridge.registerHandler)).@"fn".return_type.?;
     try std.testing.expectEqual(std.mem.Allocator.Error!void, RegRet);
