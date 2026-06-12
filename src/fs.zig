@@ -28,12 +28,72 @@ pub const Fs = struct {
     }
 };
 
+/// Extract the "path" string from a bridge params value.
+/// Returns null if params is not an object or has no string "path" field.
+fn extractPath(params: std.json.Value) ?[]const u8 {
+    const obj = switch (params) {
+        .object => |o| o,
+        else => return null,
+    };
+    const val = obj.get("path") orelse return null;
+    return switch (val) {
+        .string => |s| s,
+        else => null,
+    };
+}
+
+/// Read an entire file by absolute path. Caller owns the returned slice.
+/// Returns error.FileTooLarge if file exceeds max_file_size.
+fn readFileBytes(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const file = try std.Io.Dir.openFileAbsolute(io, path, .{});
+    defer file.close(io);
+    const file_len = try file.length(io);
+    if (file_len > max_file_size) return error.FileTooLarge;
+    const buf = try allocator.alloc(u8, @intCast(file_len));
+    errdefer allocator.free(buf);
+    const n = try file.readPositionalAll(io, buf, 0);
+    if (n != file_len) {
+        allocator.free(buf);
+        return error.UnexpectedEof;
+    }
+    return buf;
+}
+
 fn handleOpenFile(bridge: *Bridge, _: std.json.Value, id: ?i64) void {
     if (id) |i| bridge.resolve(i, "null") catch {};
 }
 
-fn handleReadText(bridge: *Bridge, _: std.json.Value, id: ?i64) void {
-    if (id) |i| bridge.resolve(i, "null") catch {};
+fn handleReadText(bridge: *Bridge, params: std.json.Value, id: ?i64) void {
+    const self: *Fs = @ptrCast(@alignCast(bridge.context.?));
+    const path = extractPath(params) orelse {
+        log.warn("fs.readText: missing or non-string path param", .{});
+        if (id) |i| bridge.resolve(i, "null") catch {};
+        return;
+    };
+    const bytes = readFileBytes(self.allocator, path) catch |err| {
+        log.warn("fs.readText: read failed path={s} err={s}", .{ path, @errorName(err) });
+        if (id) |i| bridge.resolve(i, "null") catch {};
+        return;
+    };
+    defer self.allocator.free(bytes);
+    if (!std.unicode.utf8ValidateSlice(bytes)) {
+        log.warn("fs.readText: file is not valid UTF-8 path={s}", .{path});
+        if (id) |i| bridge.resolve(i, "null") catch {};
+        return;
+    }
+    // std.json.Stringify.valueAlloc serialises []u8 as a JSON string when
+    // the slice is valid UTF-8 (Stringify.zig:504-508).
+    const json = std.json.Stringify.valueAlloc(
+        self.allocator,
+        .{ .content = bytes },
+        .{},
+    ) catch {
+        if (id) |i| bridge.resolve(i, "null") catch {};
+        return;
+    };
+    defer self.allocator.free(json);
+    if (id) |i| bridge.resolve(i, json) catch {};
 }
 
 fn handleReadBinary(bridge: *Bridge, _: std.json.Value, id: ?i64) void {
@@ -42,4 +102,20 @@ fn handleReadBinary(bridge: *Bridge, _: std.json.Value, id: ?i64) void {
 
 fn handleWriteText(bridge: *Bridge, _: std.json.Value, id: ?i64) void {
     if (id) |i| bridge.resolve(i, "null") catch {};
+}
+
+test "readFileBytes reads a known file" {
+    const allocator = std.testing.allocator;
+    const path = "/tmp/wkz-fs-test-readbytes.txt";
+    const expected = "hello wkz readFileBytes";
+
+    // Write the test file using the same Zig 0.16 API.
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const f = try std.Io.Dir.createFileAbsolute(io, path, .{});
+    try f.writeStreamingAll(io, expected);
+    f.close(io);
+
+    const result = try readFileBytes(allocator, path);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings(expected, result);
 }
