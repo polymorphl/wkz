@@ -13,7 +13,13 @@ pub const Fs = struct {
         return .{ .allocator = allocator };
     }
 
-    /// Register all `fs.*` bridge handlers on `bridge`.
+    /// Register the fs bridge handlers and set bridge.context to this Fs instance.
+    /// Call once at startup after bridge.attach().
+    ///
+    /// Security: `fs.readText`, `fs.readBinary`, and `fs.writeText` accept
+    /// absolute paths directly from JS without path traversal validation.
+    /// Only register these handlers in apps where the webview loads trusted
+    /// local content. Do not expose them in apps loading remote URLs.
     ///
     /// Ownership: borrows `bridge` for the duration of the call only; sets
     /// `bridge.context` to a type-erased pointer to `self`. The caller must
@@ -53,10 +59,7 @@ fn readFileBytes(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     const buf = try allocator.alloc(u8, @intCast(file_len));
     errdefer allocator.free(buf);
     const n = try file.readPositionalAll(io, buf, 0);
-    if (n != file_len) {
-        allocator.free(buf);
-        return error.UnexpectedEof;
-    }
+    if (n != file_len) return error.UnexpectedEof; // errdefer frees buf
     return buf;
 }
 
