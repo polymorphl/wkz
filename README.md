@@ -83,13 +83,16 @@ const wkz = @import("wkz");
 
 wkz is a pure macOS/ObjC layer — no frontend or build pipeline is imposed. Load content however you like: `loadHTMLString`, `loadURL` to a dev server, or wire up your own `SchemeHandler` for embedded assets.
 
-A working example is in [`examples/minimal/`](examples/minimal/) — it uses a local path dependency so you can test it directly from this repo:
+## Examples
 
-```sh
-cd examples/minimal
-zig build        # compiles
-zig build run    # opens a window with "Hello from wkz"
-```
+Each example is a standalone Zig package using wkz as a local path dependency — runnable directly from this repo.
+
+| Example | What it shows |
+|---------|---------------|
+| [`examples/minimal/`](examples/minimal/) | Smallest possible app: window + WKWebView + inline HTML. No bridge, no assets. |
+| [`examples/updater/`](examples/updater/) | Auto-updater wired through the JS↔Zig bridge: check / download / install flow with a sample manifest. |
+
+See each folder's `README.md` for full instructions.
 
 ## Status
 
