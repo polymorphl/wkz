@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const objc = @import("objc");
+const updater_mod = @import("updater.zig");
 
 /// NSApplicationActivationPolicy values (AppKit/NSApplication.h).
 /// We only need `.regular`: a normal app with a Dock icon and a menu bar.
@@ -63,6 +64,58 @@ pub const App = struct {
     /// Must be called on the main thread.
     pub fn activate(self: App) void {
         self.ns_app.msgSend(void, "activateIgnoringOtherApps:", .{true});
+    }
+
+    /// Add "Check for Updates…" to the app menu (first submenu of the main menu).
+    /// Inserts the item at index 0 with a separator below it.
+    ///
+    /// Note (v0.1): the menu item's `checkForUpdates:` action is not wired to a
+    /// live ObjC handler. In v0.1 the actual check is driven from the frontend via
+    /// the bridge. The menu item serves as a visual hook for future wiring.
+    ///
+    /// `upd` is stored via the bridge context (`registerBridgeHandlers`); this
+    /// function does not use it directly.
+    ///
+    /// Must be called on the main thread, after `App.init()`.
+    pub fn addCheckForUpdatesItem(
+        self: App,
+        allocator: std.mem.Allocator,
+        upd: *updater_mod.Updater,
+    ) Error!void {
+        _ = allocator;
+        _ = upd;
+
+        const NSMenuItem = objc.getClass("NSMenuItem") orelse return Error.ClassNotFound;
+
+        const main_menu = self.ns_app.msgSend(objc.Object, "mainMenu", .{});
+        if (main_menu.value == null) return Error.ClassNotFound;
+
+        const app_item = main_menu.msgSend(objc.Object, "itemAtIndex:", .{@as(c_long, 0)});
+        if (app_item.value == null) return Error.ClassNotFound;
+
+        const app_menu = app_item.msgSend(objc.Object, "submenu", .{});
+        if (app_menu.value == null) return Error.ClassNotFound;
+
+        // Separator inserted first (at index 0), then item inserted at 0 (above separator).
+        const sep = NSMenuItem.msgSend(objc.Object, "separatorItem", .{});
+        app_menu.msgSend(void, "insertItem:atIndex:", .{ sep, @as(c_long, 0) });
+
+        // "Check for Updates…" item — title built from a compile-time literal.
+        const NSString = objc.getClass("NSString") orelse return Error.ClassNotFound;
+        const title = nsString(NSString, "Check for Updates\u{2026}");
+        defer title.msgSend(void, "release", .{});
+
+        const empty_key = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{@as([*:0]const u8, "")});
+
+        const item = NSMenuItem.msgSend(objc.Object, "alloc", .{})
+            .msgSend(objc.Object, "initWithTitle:action:keyEquivalent:", .{
+            title,
+            objc.sel("checkForUpdates:"),
+            empty_key,
+        });
+        defer item.msgSend(void, "release", .{});
+
+        app_menu.msgSend(void, "insertItem:atIndex:", .{ item, @as(c_long, 0) });
     }
 };
 

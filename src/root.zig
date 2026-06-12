@@ -25,6 +25,10 @@ pub const scheme = @import("scheme.zig");
 // and test graph so its tests run.
 const objc_helpers = @import("objc_helpers.zig");
 
+// Updater module: self-update support. Exported so consumers can use
+// `wkz.updater.Updater`, `wkz.updater.UpdaterConfig`, etc.
+pub const updater = @import("updater.zig");
+
 test {
     std.testing.refAllDecls(@This());
     _ = objc_helpers;
