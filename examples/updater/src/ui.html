@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>wkz Updater Demo</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+      font-size: 14px;
+      background: #1e1e1e;
+      color: #d4d4d4;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 24px;
+    }
+
+    h1 {
+      font-size: 20px;
+      font-weight: 600;
+      margin-bottom: 8px;
+      color: #ffffff;
+    }
+
+    .version {
+      font-size: 12px;
+      color: #888;
+      margin-bottom: 32px;
+    }
+
+    .button-row {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 32px;
+    }
+
+    button {
+      padding: 8px 18px;
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      background: #3a3a3a;
+      color: #d4d4d4;
+      transition: background 0.15s;
+    }
+
+    button:hover:not(:disabled) { background: #4a4a4a; }
+    button:disabled { opacity: 0.4; cursor: default; }
+
+    button.primary {
+      background: #0066cc;
+      color: #fff;
+    }
+    button.primary:hover:not(:disabled) { background: #0077e6; }
+
+    .status-box {
+      width: 100%;
+      max-width: 480px;
+      min-height: 120px;
+      background: #2a2a2a;
+      border: 1px solid #3a3a3a;
+      border-radius: 8px;
+      padding: 16px;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .status-box .label {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: #666;
+      margin-bottom: 8px;
+    }
+
+    .status-line { color: #d4d4d4; }
+    .status-line.ok  { color: #4ec9b0; }
+    .status-line.err { color: #f44747; }
+    .status-line.info { color: #569cd6; }
+  </style>
+</head>
+<body>
+  <h1>wkz Auto-Updater Demo</h1>
+  <p class="version">Current version: 0.1.0</p>
+
+  <div class="button-row">
+    <button id="btn-check" class="primary">Check for Updates</button>
+    <button id="btn-download" disabled>Download</button>
+    <button id="btn-install" disabled>Install &amp; Restart</button>
+  </div>
+
+  <div class="status-box">
+    <div class="label">Status</div>
+    <div id="status" class="status-line info">Ready. Click "Check for Updates" to begin.</div>
+  </div>
+
+  <script>
+    // -------------------------------------------------------------------------
+    // Bridge protocol
+    //
+    // JS -> Zig: postMessage(JSON.stringify({ method, params, id }))
+    // Zig -> JS: evaluates __resolve(id, result) — fulfils the promise
+    // Zig -> JS: evaluates __wkz_event({ type, payload }) — push events
+    // -------------------------------------------------------------------------
+
+    // Pending RPC calls keyed by correlation id.
+    const pendingCalls = new Map();
+    let nextId = 0;
+
+    // __resolve: installed globally so Zig's evaluateJavaScript can call it.
+    window.__resolve = function __resolve(id, result) {
+      const pending = pendingCalls.get(id);
+      if (pending === undefined) {
+        console.warn('wkz: __resolve received unknown id=' + id);
+        return;
+      }
+      pendingCalls.delete(id);
+      pending.resolve(result);
+    };
+
+    // __wkz_event: installed globally so Zig's emitEvent helper can call it.
+    // Zig calls: window.__wkz_event({ type: "update.available", payload: {...} })
+    const eventListeners = new Map();
+
+    window.__wkz_event = function __wkz_event(event) {
+      const handlers = eventListeners.get(event.type);
+      if (!handlers) return;
+      for (const handler of handlers) {
+        try {
+          handler(event.payload ?? {});
+        } catch (err) {
+          console.error('wkz: event handler for "' + event.type + '" threw:', err);
+        }
+      }
+    };
+
+    // invoke(method, params) — returns a Promise resolved by Zig.
+    function invoke(method, params) {
+      const bridge = window.webkit?.messageHandlers?.bridge;
+      if (!bridge) {
+        return Promise.reject(new Error('invoke: not running inside a WKWebView'));
+      }
+      const id = nextId;
+      nextId = nextId < Number.MAX_SAFE_INTEGER ? nextId + 1 : 0;
+      return new Promise((resolve, reject) => {
+        pendingCalls.set(id, { resolve, reject });
+        try {
+          bridge.postMessage(JSON.stringify({ method, params, id }));
+        } catch (err) {
+          pendingCalls.delete(id);
+          reject(new Error('invoke postMessage failed: ' + String(err)));
+        }
+      });
+    }
+
+    // on(eventType, handler) — subscribe to Zig push events.
+    // Returns an unsubscribe function.
+    function on(eventType, handler) {
+      let set = eventListeners.get(eventType);
+      if (!set) {
+        set = new Set();
+        eventListeners.set(eventType, set);
+      }
+      set.add(handler);
+      return function off() {
+        set.delete(handler);
+        if (set.size === 0) eventListeners.delete(eventType);
+      };
+    }
+
+    // -------------------------------------------------------------------------
+    // UI state
+    // -------------------------------------------------------------------------
+
+    const btnCheck    = document.getElementById('btn-check');
+    const btnDownload = document.getElementById('btn-download');
+    const btnInstall  = document.getElementById('btn-install');
+    const statusEl    = document.getElementById('status');
+
+    function setStatus(text, kind) {
+      statusEl.textContent = text;
+      statusEl.className = 'status-line ' + (kind || '');
+    }
+
+    function setBusy(busy) {
+      btnCheck.disabled    = busy;
+      btnDownload.disabled = busy;
+      btnInstall.disabled  = busy;
+    }
+
+    // -------------------------------------------------------------------------
+    // Push event subscriptions
+    // -------------------------------------------------------------------------
+
+    on('update.available', function(payload) {
+      setStatus(
+        'Update available: v' + payload.version + ' — ' + payload.notes,
+        'ok'
+      );
+      btnDownload.disabled = false;
+    });
+
+    on('update.progress', function(payload) {
+      setStatus('Downloading… ' + payload.percent + '%', 'info');
+    });
+
+    on('update.ready', function() {
+      setStatus('Download complete. Ready to install.', 'ok');
+      btnInstall.disabled = false;
+    });
+
+    on('update.error', function(payload) {
+      setStatus('Error [' + payload.code + ']: ' + payload.message, 'err');
+      setBusy(false);
+      btnCheck.disabled = false;
+    });
+
+    // -------------------------------------------------------------------------
+    // Button handlers
+    // -------------------------------------------------------------------------
+
+    btnCheck.addEventListener('click', function() {
+      setBusy(true);
+      setStatus('Checking for updates…', 'info');
+      invoke('updater.check', {}).then(function(result) {
+        if (result === null) {
+          setStatus('You are already on the latest version.', 'ok');
+          btnCheck.disabled = false;
+        }
+        // update.available event will fire if an update exists
+      }).catch(function(err) {
+        setStatus('Check failed: ' + String(err), 'err');
+        btnCheck.disabled = false;
+      });
+    });
+
+    btnDownload.addEventListener('click', function() {
+      setBusy(true);
+      setStatus('Starting download…', 'info');
+      invoke('updater.download', {}).then(function() {
+        // update.ready event will fire on success
+      }).catch(function(err) {
+        setStatus('Download failed: ' + String(err), 'err');
+        btnCheck.disabled = false;
+      });
+    });
+
+    btnInstall.addEventListener('click', function() {
+      setBusy(true);
+      setStatus('Installing and restarting…', 'info');
+      // updater.install calls execv on success — the process restarts and this
+      // page will never see a response. On error, update.error event fires.
+      invoke('updater.install', {}).catch(function(err) {
+        setStatus('Install failed: ' + String(err), 'err');
+        btnCheck.disabled = false;
+      });
+    });
+  </script>
+</body>
+</html>

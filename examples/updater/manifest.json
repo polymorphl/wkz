@@ -1,0 +1,17 @@
+{
+  "version": "0.2.0",
+  "pub_date": "2026-06-12T12:00:00Z",
+  "notes": "Bug fixes and performance improvements.",
+  "platforms": {
+    "darwin-aarch64": {
+      "url": "https://example.com/releases/0.2.0/myapp-aarch64",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "signature": null
+    },
+    "darwin-x86_64": {
+      "url": "https://example.com/releases/0.2.0/myapp-x86_64",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "signature": null
+    }
+  }
+}
