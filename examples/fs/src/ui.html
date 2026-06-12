@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>wkz FS Demo</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+      font-size: 14px;
+      background: #1e1e1e;
+      color: #d4d4d4;
+      padding: 32px;
+    }
+    h1 { font-size: 20px; font-weight: 600; color: #fff; margin-bottom: 24px; }
+    h2 { font-size: 14px; font-weight: 600; color: #aaa; margin-bottom: 10px; }
+    .section { margin-bottom: 28px; padding-bottom: 28px; border-bottom: 1px solid #2e2e2e; }
+    .section:last-child { border-bottom: none; }
+    button {
+      padding: 7px 16px;
+      border: none;
+      border-radius: 5px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      background: #0066cc;
+      color: #fff;
+      margin-right: 8px;
+    }
+    button:hover { background: #0077e6; }
+    .status { font-size: 12px; color: #888; margin: 8px 0; min-height: 18px; }
+    .status.ok  { color: #4ec9b0; }
+    .status.err { color: #f44747; }
+    pre {
+      background: #2a2a2a;
+      border: 1px solid #3a3a3a;
+      border-radius: 6px;
+      padding: 12px;
+      font-size: 12px;
+      line-height: 1.5;
+      max-height: 180px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+  </style>
+</head>
+<body>
+  <h1>wkz FS Bridge Demo</h1>
+
+  <div class="section">
+    <h2>Read Text File</h2>
+    <button id="btn-read-text">Open &amp; Read Text</button>
+    <div id="status-text" class="status"></div>
+    <pre id="output-text"></pre>
+  </div>
+
+  <div class="section">
+    <h2>Read Binary File (base64)</h2>
+    <button id="btn-read-binary">Open &amp; Read Binary</button>
+    <div id="status-binary" class="status"></div>
+    <pre id="output-binary"></pre>
+  </div>
+
+  <div class="section">
+    <h2>Write Text File</h2>
+    <button id="btn-write">Write /tmp/wkz-demo.txt</button>
+    <div id="status-write" class="status"></div>
+  </div>
+
+  <script>
+    const pendingCalls = new Map();
+    let nextId = 0;
+
+    window.__resolve = function __resolve(id, result) {
+      const pending = pendingCalls.get(id);
+      if (pending === undefined) {
+        console.warn('wkz: __resolve received unknown id=' + id);
+        return;
+      }
+      pendingCalls.delete(id);
+      pending(result);
+    };
+
+    function invoke(method, params) {
+      const bridge = window.webkit?.messageHandlers?.bridge;
+      if (!bridge) return Promise.reject(new Error('not inside a WKWebView'));
+      const id = nextId;
+      nextId = nextId < Number.MAX_SAFE_INTEGER ? nextId + 1 : 0;
+      return new Promise((resolve) => {
+        pendingCalls.set(id, resolve);
+        bridge.postMessage(JSON.stringify({ method, params: params || {}, id }));
+      });
+    }
+
+    document.getElementById('btn-read-text').addEventListener('click', async () => {
+      const status = document.getElementById('status-text');
+      const output = document.getElementById('output-text');
+      status.className = 'status';
+      status.textContent = 'Opening file picker…';
+      output.textContent = '';
+
+      const picked = await invoke('fs.openFile');
+      if (picked === null) { status.textContent = 'Cancelled.'; return; }
+
+      status.textContent = 'Reading ' + picked.path + '…';
+      const result = await invoke('fs.readText', { path: picked.path });
+      if (result === null) {
+        status.className = 'status err';
+        status.textContent = 'Read failed — file may be binary or too large (>10 MiB). Check Zig logs.';
+        return;
+      }
+      status.className = 'status ok';
+      status.textContent = picked.path + ' · ' + result.content.length + ' chars';
+      output.textContent = result.content.slice(0, 4096) +
+        (result.content.length > 4096 ? '\n…(truncated)' : '');
+    });
+
+    document.getElementById('btn-read-binary').addEventListener('click', async () => {
+      const status = document.getElementById('status-binary');
+      const output = document.getElementById('output-binary');
+      status.className = 'status';
+      status.textContent = 'Opening file picker…';
+      output.textContent = '';
+
+      const picked = await invoke('fs.openFile');
+      if (picked === null) { status.textContent = 'Cancelled.'; return; }
+
+      status.textContent = 'Reading ' + picked.path + ' as binary…';
+      const result = await invoke('fs.readBinary', { path: picked.path });
+      if (result === null) {
+        status.className = 'status err';
+        status.textContent = 'Read failed — file may exceed 10 MiB. Check Zig logs.';
+        return;
+      }
+      const approxBytes = Math.round(result.data.length * 3 / 4);
+      status.className = 'status ok';
+      status.textContent = picked.path + ' · ~' + approxBytes + ' bytes (base64)';
+      output.textContent = result.data.slice(0, 512) +
+        (result.data.length > 512 ? '\n…(truncated)' : '');
+    });
+
+    document.getElementById('btn-write').addEventListener('click', async () => {
+      const status = document.getElementById('status-write');
+      status.className = 'status';
+      status.textContent = 'Writing…';
+      const content = 'wkz fs demo\nwritten by wkz.fs.handleWriteText\n';
+      await invoke('fs.writeText', { path: '/tmp/wkz-demo.txt', content });
+      status.className = 'status ok';
+      status.textContent = 'Written. Verify: cat /tmp/wkz-demo.txt';
+    });
+  </script>
+</body>
+</html>

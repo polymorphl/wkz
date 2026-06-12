@@ -91,6 +91,7 @@ Each example is a standalone Zig package using wkz as a local path dependency â€
 |---------|---------------|
 | [`examples/minimal/`](examples/minimal/) | Smallest possible app: window + WKWebView + inline HTML. No bridge, no assets. |
 | [`examples/updater/`](examples/updater/) | Auto-updater wired through the JSâ†”Zig bridge: check / download / install flow with a sample manifest. |
+| [`examples/fs/`](examples/fs/) | File system bridge: native open dialog (NSOpenPanel), read text/binary, write text. |
 
 See each folder's `README.md` for full instructions.
 
