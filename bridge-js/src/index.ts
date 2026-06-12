@@ -20,6 +20,7 @@ declare global {
   // `result` is the raw JS value passed by Zig — a string, number, or object
   // depending on the JS expression Zig evaluates.
   function __resolve(id: number, result: unknown): void;
+  function __wkz_event(event: { type: string; payload?: unknown }): void;
 
   interface Window {
     webkit?: {
