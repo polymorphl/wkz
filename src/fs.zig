@@ -68,6 +68,14 @@ fn encodeBase64(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
     return buf;
 }
 
+/// Write UTF-8 text to an absolute path, truncating if the file exists.
+fn writeTextToPath(path: []const u8, content: []const u8) !void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const file = try std.Io.Dir.createFileAbsolute(io, path, .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, content);
+}
+
 fn handleOpenFile(bridge: *Bridge, _: std.json.Value, id: ?i64) void {
     if (id) |i| bridge.resolve(i, "null") catch {};
 }
@@ -137,7 +145,48 @@ fn handleReadBinary(bridge: *Bridge, params: std.json.Value, id: ?i64) void {
     if (id) |i| bridge.resolve(i, json) catch {};
 }
 
-fn handleWriteText(bridge: *Bridge, _: std.json.Value, id: ?i64) void {
+/// Resolves with "null" on success or error (errors are logged).
+fn handleWriteText(bridge: *Bridge, params: std.json.Value, id: ?i64) void {
+    const obj = switch (params) {
+        .object => |o| o,
+        else => {
+            log.warn("fs.writeText: params must be a JSON object", .{});
+            if (id) |i| bridge.resolve(i, "null") catch {};
+            return;
+        },
+    };
+
+    const path = switch (obj.get("path") orelse {
+        log.warn("fs.writeText: missing path param", .{});
+        if (id) |i| bridge.resolve(i, "null") catch {};
+        return;
+    }) {
+        .string => |s| s,
+        else => {
+            log.warn("fs.writeText: path must be a string", .{});
+            if (id) |i| bridge.resolve(i, "null") catch {};
+            return;
+        },
+    };
+
+    const content = switch (obj.get("content") orelse {
+        log.warn("fs.writeText: missing content param", .{});
+        if (id) |i| bridge.resolve(i, "null") catch {};
+        return;
+    }) {
+        .string => |s| s,
+        else => {
+            log.warn("fs.writeText: content must be a string", .{});
+            if (id) |i| bridge.resolve(i, "null") catch {};
+            return;
+        },
+    };
+
+    writeTextToPath(path, content) catch |err| {
+        log.warn("fs.writeText: write failed path={s} err={s}", .{ path, @errorName(err) });
+        if (id) |i| bridge.resolve(i, "null") catch {};
+        return;
+    };
     if (id) |i| bridge.resolve(i, "null") catch {};
 }
 
@@ -175,4 +224,14 @@ test "readFileBytes reads a known file" {
     const result = try readFileBytes(allocator, path);
     defer allocator.free(result);
     try std.testing.expectEqualStrings(expected, result);
+}
+
+test "writeTextToPath creates and reads back a file" {
+    const allocator = std.testing.allocator;
+    const path = "/tmp/wkz-fs-test-write.txt";
+    const content = "wkz writeTextToPath test";
+    try writeTextToPath(path, content);
+    const result = try readFileBytes(allocator, path);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings(content, result);
 }
