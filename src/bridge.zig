@@ -278,6 +278,10 @@ pub const Bridge = struct {
     /// from the caller via `init`; `Bridge` does not own it.
     allocator: std.mem.Allocator,
 
+    /// Generic context pointer for modules that register bridge handlers and
+    /// need to recover their own state at dispatch time (e.g. updater).
+    context: ?*anyopaque = null,
+
     /// Runtime method -> handler table. Heap-owned by this `Bridge` (its backing
     /// storage is freed by `deinit`). Keys are not copied (static literals).
     dispatch: DispatchTable,
