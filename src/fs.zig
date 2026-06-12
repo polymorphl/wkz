@@ -60,6 +60,14 @@ fn readFileBytes(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     return buf;
 }
 
+/// Base64-encode data using standard alphabet with padding. Caller owns result.
+fn encodeBase64(allocator: std.mem.Allocator, data: []const u8) ![]u8 {
+    const encoded_len = std.base64.standard.Encoder.calcSize(data.len);
+    const buf = try allocator.alloc(u8, encoded_len);
+    _ = std.base64.standard.Encoder.encode(buf, data);
+    return buf;
+}
+
 fn handleOpenFile(bridge: *Bridge, _: std.json.Value, id: ?i64) void {
     if (id) |i| bridge.resolve(i, "null") catch {};
 }
@@ -96,12 +104,61 @@ fn handleReadText(bridge: *Bridge, params: std.json.Value, id: ?i64) void {
     if (id) |i| bridge.resolve(i, json) catch {};
 }
 
-fn handleReadBinary(bridge: *Bridge, _: std.json.Value, id: ?i64) void {
-    if (id) |i| bridge.resolve(i, "null") catch {};
+/// Resolves with {"data":"<base64string>"} or "null" on error.
+fn handleReadBinary(bridge: *Bridge, params: std.json.Value, id: ?i64) void {
+    const self: *Fs = @ptrCast(@alignCast(bridge.context.?));
+    const path = extractPath(params) orelse {
+        log.warn("fs.readBinary: missing or non-string path param", .{});
+        if (id) |i| bridge.resolve(i, "null") catch {};
+        return;
+    };
+    const bytes = readFileBytes(self.allocator, path) catch |err| {
+        log.warn("fs.readBinary: read failed path={s} err={s}", .{ path, @errorName(err) });
+        if (id) |i| bridge.resolve(i, "null") catch {};
+        return;
+    };
+    defer self.allocator.free(bytes);
+    const encoded = encodeBase64(self.allocator, bytes) catch {
+        log.warn("fs.readBinary: encodeBase64 failed (OOM)", .{});
+        if (id) |i| bridge.resolve(i, "null") catch {};
+        return;
+    };
+    defer self.allocator.free(encoded);
+    // encoded is pure base64 ASCII — always valid UTF-8, always a JSON string.
+    const json = std.json.Stringify.valueAlloc(
+        self.allocator,
+        .{ .data = encoded },
+        .{},
+    ) catch {
+        if (id) |i| bridge.resolve(i, "null") catch {};
+        return;
+    };
+    defer self.allocator.free(json);
+    if (id) |i| bridge.resolve(i, json) catch {};
 }
 
 fn handleWriteText(bridge: *Bridge, _: std.json.Value, id: ?i64) void {
     if (id) |i| bridge.resolve(i, "null") catch {};
+}
+
+test "encodeBase64 known vector" {
+    const allocator = std.testing.allocator;
+    const result = try encodeBase64(allocator, "hello");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("aGVsbG8=", result);
+}
+
+test "encodeBase64 round-trips binary data" {
+    const allocator = std.testing.allocator;
+    const data: []const u8 = &.{ 0x00, 0x01, 0xFF, 0xFE, 0x42 };
+    const encoded = try encodeBase64(allocator, data);
+    defer allocator.free(encoded);
+
+    const decoded_len = try std.base64.standard.Decoder.calcSizeForSlice(encoded);
+    const decoded = try allocator.alloc(u8, decoded_len);
+    defer allocator.free(decoded);
+    try std.base64.standard.Decoder.decode(decoded, encoded);
+    try std.testing.expectEqualSlices(u8, data, decoded);
 }
 
 test "readFileBytes reads a known file" {
