@@ -85,11 +85,20 @@ pub const Updater = struct {
 
         const json: []u8 = switch (self.config.manifest_source) {
             .file => |path| blk: {
-                const file = std.fs.openFileAbsolute(path, .{}) catch
+                // Zig 0.16: std.fs.openFileAbsolute and File.readToEndAlloc
+                // were removed. Use std.Io.Dir.openFileAbsolute (Dir.zig:581)
+                // and File.readPositionalAll (File.zig:576) instead.
+                const io = std.Io.Threaded.global_single_threaded.io();
+                const file = std.Io.Dir.openFileAbsolute(io, path, .{}) catch
                     return error.ManifestFetchFailed;
-                defer file.close();
-                break :blk file.readToEndAlloc(arena.allocator(), 1 * 1024 * 1024) catch
+                defer file.close(io);
+                const file_len = file.length(io) catch return error.ManifestFetchFailed;
+                if (file_len > 1 * 1024 * 1024) return error.ManifestFetchFailed;
+                const buf = arena.allocator().alloc(u8, @intCast(file_len)) catch
                     return error.ManifestFetchFailed;
+                const n = file.readPositionalAll(io, buf, 0) catch
+                    return error.ManifestFetchFailed;
+                break :blk buf[0..n];
             },
             .url => |url| blk: {
                 const data = nsDataDownload(arena.allocator(), url) catch
