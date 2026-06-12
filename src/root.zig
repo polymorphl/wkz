@@ -9,6 +9,7 @@
 //!   - `webview` — WKWebView management (`WebView.init`, `attach`, `loadURL`, …)
 //!   - `bridge`  — JS↔Zig typed bridge (`Bridge.init`, `registerHandler`, …)
 //!   - `scheme`  — `app://` scheme handler (`SchemeHandler`, `AssetMap`, `mimeForPath`)
+//!   - `fs`      — file system bridge handlers (`Fs.init`, `registerBridgeHandlers`)
 
 const std = @import("std");
 
@@ -28,6 +29,9 @@ const objc_helpers = @import("objc_helpers.zig");
 // Updater module: self-update support. Exported so consumers can use
 // `wkz.updater.Updater`, `wkz.updater.UpdaterConfig`, etc.
 pub const updater = @import("updater.zig");
+
+// Fs module: file system bridge handlers (open dialog, read, write).
+pub const fs = @import("fs.zig");
 
 test {
     std.testing.refAllDecls(@This());
