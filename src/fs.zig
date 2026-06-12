@@ -76,8 +76,55 @@ fn writeTextToPath(path: []const u8, content: []const u8) !void {
     try file.writeStreamingAll(io, content);
 }
 
+/// Resolves with {"path":"/absolute/path"} when user selects a file, or "null" if cancelled.
 fn handleOpenFile(bridge: *Bridge, _: std.json.Value, id: ?i64) void {
-    if (id) |i| bridge.resolve(i, "null") catch {};
+    const self: *Fs = @ptrCast(@alignCast(bridge.context.?));
+
+    // NSOpenPanel is looked up from the ObjC runtime — same pattern as
+    // NSApplication in app.zig:40 and NSMenuItem in app.zig:88.
+    const NSOpenPanel = objc.getClass("NSOpenPanel") orelse {
+        log.warn("fs.openFile: NSOpenPanel class not found in ObjC runtime", .{});
+        if (id) |i| bridge.resolve(i, "null") catch {};
+        return;
+    };
+
+    const panel = NSOpenPanel.msgSend(objc.Object, "openPanel", .{});
+    panel.msgSend(void, "setCanChooseFiles:", .{true});
+    panel.msgSend(void, "setCanChooseDirectories:", .{false});
+    panel.msgSend(void, "setAllowsMultipleSelection:", .{false});
+
+    // runModal blocks the main thread until the user dismisses the panel.
+    // NSModalResponseOK = 1. NSInteger = c_long on macOS (confirmed app.zig:13).
+    const response = panel.msgSend(c_long, "runModal", .{});
+    if (response != 1) {
+        // User cancelled.
+        if (id) |i| bridge.resolve(i, "null") catch {};
+        return;
+    }
+
+    // panel.URLs -> NSArray -> objectAtIndex:0 -> NSURL -> path -> UTF8String.
+    // NSUInteger index type = c_ulong on macOS.
+    const urls = panel.msgSend(objc.Object, "URLs", .{});
+    const url = urls.msgSend(objc.Object, "objectAtIndex:", .{@as(c_ulong, 0)});
+    const path_nsstring = url.msgSend(objc.Object, "path", .{});
+    const path_cstr = path_nsstring.msgSend(?[*:0]const u8, "UTF8String", .{}) orelse {
+        log.warn("fs.openFile: UTF8String returned null for selected URL path", .{});
+        if (id) |i| bridge.resolve(i, "null") catch {};
+        return;
+    };
+    const path = std.mem.span(path_cstr);
+
+    const json = std.json.Stringify.valueAlloc(
+        self.allocator,
+        .{ .path = path },
+        .{},
+    ) catch {
+        log.warn("fs.openFile: json serialization failed (OOM)", .{});
+        if (id) |i| bridge.resolve(i, "null") catch {};
+        return;
+    };
+    defer self.allocator.free(json);
+    if (id) |i| bridge.resolve(i, json) catch {};
 }
 
 fn handleReadText(bridge: *Bridge, params: std.json.Value, id: ?i64) void {
