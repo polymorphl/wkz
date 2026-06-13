@@ -36,7 +36,7 @@ pub fn main() !void {
 
     // Order matters: the shared NSApplication must exist before any window is
     // created, so App.init() runs first.
-    const app = try wkz.app.App.init();
+    var app = try wkz.app.App.init();
 
     // Centered, titled/closable/resizable window. It must outlive the run loop;
     // see the lifetime note on `run()` below for why no deinit is called.

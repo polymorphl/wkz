@@ -8,6 +8,46 @@ const std = @import("std");
 const objc = @import("objc");
 const updater_mod = @import("updater.zig");
 
+const c = objc.c;
+
+/// Module-level quit policy for WkzAppDelegate. One NSApp per process →
+/// one delegate → module-level state is correct and avoids an ivar.
+var app_quit_on_last_close: bool = false;
+
+/// Process-unique name for the NSApplicationDelegate subclass.
+const app_delegate_class_name: [:0]const u8 = "WkzAppDelegate";
+
+/// Create (or look up) the WkzAppDelegate class.
+/// Idempotent: second call returns the existing class. Lives for the process.
+fn appDelegateClass() Error!objc.Class {
+    if (objc.getClass(app_delegate_class_name)) |existing| return existing;
+    const NSObject = objc.getClass("NSObject") orelse return Error.ClassNotFound;
+    const cls = objc.allocateClassPair(NSObject, app_delegate_class_name) orelse
+        return Error.ClassNotFound;
+    errdefer objc.disposeClassPair(cls);
+    std.debug.assert(cls.addMethod(
+        "applicationShouldTerminateAfterLastWindowClosed:",
+        impShouldTerminateAfterLastWindowClosed,
+    ));
+    objc.registerClassPair(cls);
+    return cls;
+}
+
+/// IMP for applicationShouldTerminateAfterLastWindowClosed:.
+/// Returns Zig `bool`; zig-objc encodes it as `B` (ObjC `BOOL`); arm64
+/// ABI-compatible since `BOOL = i8` and Zig `bool` occupies one byte with
+/// values 0/1. Reads the module-level quit policy set by setQuitOnLastWindowClosed.
+fn impShouldTerminateAfterLastWindowClosed(
+    self: c.id,
+    _cmd: c.SEL,
+    application: c.id,
+) callconv(.c) bool {
+    _ = self;
+    _ = _cmd;
+    _ = application;
+    return app_quit_on_last_close;
+}
+
 /// NSApplicationActivationPolicy values (AppKit/NSApplication.h).
 /// We only need `.regular`: a normal app with a Dock icon and a menu bar.
 const NSApplicationActivationPolicyRegular: c_long = 0;
@@ -28,6 +68,10 @@ pub const Error = error{
 pub const App = struct {
     /// The shared `NSApplication` instance (`NSApp`). Owned by AppKit, not us.
     ns_app: objc.Object,
+    /// The owned NSApplicationDelegate instance, if one has been set via
+    /// `setQuitOnLastWindowClosed`. Null until that method is first called.
+    /// Owned: must be released in `deinit`.
+    delegate: ?objc.Object = null,
 
     /// Create/obtain the shared application and configure it as a regular,
     /// menu-bar app with a Cmd+Q quit item.
@@ -116,6 +160,29 @@ pub const App = struct {
         defer item.msgSend(void, "release", .{});
 
         app_menu.msgSend(void, "insertItem:atIndex:", .{ item, @as(c_long, 0) });
+    }
+
+    /// Release the owned delegate reference (if set). Does NOT release ns_app —
+    /// it is the AppKit process singleton, not owned by us.
+    pub fn deinit(self: App) void {
+        if (self.delegate) |d| d.msgSend(void, "release", .{});
+    }
+
+    /// Wire quit-on-last-window-close behaviour. Registers WkzAppDelegate (once,
+    /// idempotent), creates a delegate instance, and sets it as NSApp's delegate.
+    /// Replaces any previously set delegate (releases the old one first).
+    /// Must be called on the main thread, after `App.init()`.
+    pub fn setQuitOnLastWindowClosed(self: *App, enabled: bool) Error!void {
+        const cls = try appDelegateClass();
+        app_quit_on_last_close = enabled;
+        if (self.delegate) |old| {
+            old.msgSend(void, "release", .{});
+            self.delegate = null;
+        }
+        const delegate = cls.msgSend(objc.Object, "alloc", .{})
+            .msgSend(objc.Object, "init", .{});
+        self.delegate = delegate;
+        self.ns_app.msgSend(void, "setDelegate:", .{delegate});
     }
 };
 
@@ -278,6 +345,38 @@ test "init() returns a configured App with a live NSApp singleton" {
     const title = quit_item.msgSend(objc.Object, "title", .{});
     const title_utf8 = title.msgSend([*:0]const u8, "UTF8String", .{});
     try std.testing.expectEqualStrings("Quit", std.mem.span(title_utf8));
+}
+
+test "App struct has delegate field of type ?objc.Object" {
+    try std.testing.expect(@hasField(App, "delegate"));
+    try std.testing.expectEqual(?objc.Object, @FieldType(App, "delegate"));
+}
+
+test "App.deinit has correct return type and takes App by value" {
+    try std.testing.expectEqual(void, @typeInfo(@TypeOf(App.deinit)).@"fn".return_type.?);
+    try std.testing.expectEqual(App, @typeInfo(@TypeOf(App.deinit)).@"fn".params[0].type.?);
+}
+
+test "appDelegateClass registers WkzAppDelegate with the correct selector" {
+    const cls = try appDelegateClass();
+    try std.testing.expect(objc.getClass("WkzAppDelegate") != null);
+    try std.testing.expectEqual(objc.getClass("WkzAppDelegate").?.value, cls.value);
+    try std.testing.expect(cls.msgSend(
+        bool,
+        "instancesRespondToSelector:",
+        .{objc.sel("applicationShouldTerminateAfterLastWindowClosed:").value},
+    ));
+}
+
+test "appDelegateClass is idempotent" {
+    const a = try appDelegateClass();
+    const b = try appDelegateClass();
+    try std.testing.expectEqual(a.value, b.value);
+}
+
+test "setQuitOnLastWindowClosed signature matches spec" {
+    const Ret = @typeInfo(@TypeOf(App.setQuitOnLastWindowClosed)).@"fn".return_type.?;
+    try std.testing.expectEqual(Error!void, Ret);
 }
 
 test {
