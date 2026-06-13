@@ -1,0 +1,16 @@
+.{
+    .name = .multi_window,
+    .version = "0.0.0",
+    .fingerprint = 0x4d659af5369cbc8,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .wkz = .{
+            .path = "../..",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
