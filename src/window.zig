@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const objc = @import("objc");
+const c = objc.c;
 
 /// `NSWindowStyleMask` flag values (AppKit/NSWindow.h). Stable since 10.0.
 /// Combined into the style mask passed to `initWithContentRect:...`.
@@ -52,6 +53,65 @@ pub const Error = error{
     ClassNotFound,
 };
 
+/// Process-unique names for the WkzWindowDelegate ObjC class and its ivars.
+const win_delegate_class_name: [:0]const u8 = "WkzWindowDelegate";
+const win_ctx_ivar_name: [:0]const u8 = "wkz_win_ctx";
+const win_fn_ivar_name: [:0]const u8 = "wkz_win_fn";
+
+/// Pairs a user context pointer with its close callback. Stored inline in
+/// `Window` (no heap allocation) so `wkz_win_ctx` can hold `*CloseBundle`
+/// without a separate allocation. The `Window` struct must not move after
+/// `setCloseHandler` is called (the delegate holds a pointer into it).
+const CloseBundle = struct {
+    ctx: *anyopaque,
+    callback: *const fn (*anyopaque) void,
+};
+
+/// Dispatcher stored in `wkz_win_fn`. Declared `align(8)` so its address is
+/// always a multiple of 8 and can be safely stored in an `id`-typed ivar via
+/// `@ptrFromInt` without triggering Zig's Debug-mode alignment safety check.
+/// `wkz_win_ctx` holds a `*CloseBundle`; this fn dereferences it and invokes
+/// the user callback.
+fn dispatchClose(opaque_bundle: *anyopaque) align(8) void {
+    const bundle: *CloseBundle = @ptrCast(@alignCast(opaque_bundle));
+    bundle.callback(bundle.ctx);
+}
+
+/// Create (or look up) the WkzWindowDelegate class. Idempotent.
+fn winDelegateClass() Error!objc.Class {
+    if (objc.getClass(win_delegate_class_name)) |existing| return existing;
+    const NSObject = objc.getClass("NSObject") orelse return Error.ClassNotFound;
+    const cls = objc.allocateClassPair(NSObject, win_delegate_class_name) orelse
+        return Error.ClassNotFound;
+    errdefer objc.disposeClassPair(cls);
+    // Both ivars are id-typed (pointer-width). Must be added before registerClassPair.
+    std.debug.assert(cls.addIvar(win_ctx_ivar_name));
+    std.debug.assert(cls.addIvar(win_fn_ivar_name));
+    std.debug.assert(cls.addMethod("windowWillClose:", impWindowWillClose));
+    objc.registerClassPair(cls);
+    return cls;
+}
+
+/// IMP for -[WkzWindowDelegate windowWillClose:].
+/// Reads `*CloseBundle` from `wkz_win_ctx` and the `dispatchClose` fn from
+/// `wkz_win_fn`, then calls `dispatchClose(bundle)` which in turn invokes the
+/// user callback. Fires before NSWindow deallocates — all pointers are valid.
+fn impWindowWillClose(
+    self: c.id,
+    _cmd: c.SEL,
+    notification: c.id,
+) callconv(.c) void {
+    _ = _cmd;
+    _ = notification;
+    const delegate = objc.Object{ .value = self };
+    const ctx_obj = delegate.getInstanceVariable(win_ctx_ivar_name);
+    const fn_obj = delegate.getInstanceVariable(win_fn_ivar_name);
+    if (ctx_obj.value == null or fn_obj.value == null) return;
+    const bundle: *anyopaque = @ptrCast(@alignCast(ctx_obj.value));
+    const fn_ptr: *const fn (*anyopaque) void = @ptrCast(@alignCast(fn_obj.value));
+    fn_ptr(bundle);
+}
+
 /// A titled/closable/resizable NSWindow, centered and shown.
 ///
 /// Ownership: `init` produces a `+1` NSWindow reference (alloc/init) that this
@@ -63,6 +123,12 @@ pub const Error = error{
 pub const Window = struct {
     /// The owned `NSWindow` (`+1`). Released by `deinit`.
     ns_window: objc.Object,
+    /// The owned `WkzWindowDelegate` (`+1`), if set. Released by `deinit`.
+    delegate: ?objc.Object = null,
+    /// Inline storage for the close bundle (ctx + callback). `setCloseHandler`
+    /// stores `&self.close_bundle.?` in the delegate's `wkz_win_ctx` ivar, so
+    /// the `Window` must not move after `setCloseHandler` is called.
+    close_bundle: ?CloseBundle = null,
 
     /// Create a titled/closable/resizable NSWindow of `width`×`height` points,
     /// center it on screen, apply `title`, and order it to the front.
@@ -112,9 +178,50 @@ pub const Window = struct {
     }
 
     /// Release the owned NSWindow reference. After this the `Window` is dead.
+    /// Also releases the delegate if one was set via `setCloseHandler`.
     /// Must be called on the main thread.
     pub fn deinit(self: Window) void {
+        // Release ns_window first: this clears NSWindow's weak delegate pointer,
+        // so no further delegate calls can fire after the delegate is released.
         self.ns_window.msgSend(void, "release", .{});
+        if (self.delegate) |d| d.msgSend(void, "release", .{});
+    }
+
+    /// Register a callback fired when this window is about to close.
+    ///
+    /// Creates a `WkzWindowDelegate` instance, stores `ctx` and `callback` in its
+    /// ivars, and sets it as the window's delegate. Replaces any prior delegate
+    /// (releases the old one first). The delegate fires `callback(ctx)` from its
+    /// `windowWillClose:` IMP, before NSWindow deallocates.
+    ///
+    /// `ctx` is NOT owned by the delegate — the caller remains responsible for
+    /// `ctx` lifetime. `callback` must remain valid for as long as the window is
+    /// open. Must be called on the main thread.
+    ///
+    /// After this call the `Window` must not be moved in memory (no copy-by-value,
+    /// no `ArrayList` realloc): the delegate holds a pointer into `self.close_bundle`.
+    pub fn setCloseHandler(
+        self: *Window,
+        ctx: *anyopaque,
+        callback: *const fn (*anyopaque) void,
+    ) Error!void {
+        const cls = try winDelegateClass();
+        if (self.delegate) |old| {
+            old.msgSend(void, "release", .{});
+            self.delegate = null;
+        }
+        const delegate = cls.msgSend(objc.Object, "alloc", .{})
+            .msgSend(objc.Object, "init", .{});
+        // Store ctx + callback in the inline CloseBundle, then point the
+        // delegate's wkz_win_ctx ivar at it. The bundle lives in *self, so
+        // Window must not move after this call.
+        self.close_bundle = .{ .ctx = ctx, .callback = callback };
+        delegate.setInstanceVariable(win_ctx_ivar_name, .{ .value = @ptrCast(&self.close_bundle.?) });
+        // dispatchClose is declared align(8), guaranteeing its address is a
+        // multiple of 8 — safe to store in an id-typed ivar via @ptrFromInt.
+        delegate.setInstanceVariable(win_fn_ivar_name, .{ .value = @ptrFromInt(@intFromPtr(&dispatchClose)) });
+        self.delegate = delegate;
+        self.ns_window.msgSend(void, "setDelegate:", .{delegate});
     }
 
     /// Replace the window's title. `title` is copied by NSWindow; the transient
@@ -124,6 +231,21 @@ pub const Window = struct {
         const ns_title = nsString(NSString, title);
         defer ns_title.msgSend(void, "release", .{});
         self.ns_window.msgSend(void, "setTitle:", .{ns_title});
+    }
+
+    /// Move the window's bottom-left corner to `(x, y)` in screen coordinates
+    /// (AppKit origin: bottom-left of primary screen). Does not resize.
+    /// Must be called on the main thread.
+    pub fn setPosition(self: Window, x: CGFloat, y: CGFloat) void {
+        self.ns_window.msgSend(void, "setFrameOrigin:", .{CGPoint{ .x = x, .y = y }});
+    }
+
+    /// Position this window in cascade from `point` (top-left, screen coords)
+    /// and return the suggested top-left origin for the next window. Pass the
+    /// returned value to the next window's `cascadeFrom` call for the standard
+    /// macOS cascade layout. Must be called on the main thread.
+    pub fn cascadeFrom(self: Window, point: CGPoint) CGPoint {
+        return self.ns_window.msgSend(CGPoint, "cascadeTopLeftFromPoint:", .{point});
     }
 };
 
@@ -255,6 +377,65 @@ test "NSString instances respond to the selectors nsString uses" {
 // absent in headless CI. A live init test would hang or abort there, so window
 // creation is deferred to the manual GUI checklist (see TASK.md / M1.x), as
 // M1.2 did for run()/activate() GUI behaviour. No live test is added here.
+
+test "Window struct has delegate field of type ?objc.Object" {
+    try std.testing.expect(@hasField(Window, "delegate"));
+    try std.testing.expectEqual(?objc.Object, @FieldType(Window, "delegate"));
+}
+
+test "winDelegateClass registers WkzWindowDelegate with windowWillClose: selector" {
+    const cls = try winDelegateClass();
+    try std.testing.expect(objc.getClass("WkzWindowDelegate") != null);
+    try std.testing.expectEqual(objc.getClass("WkzWindowDelegate").?.value, cls.value);
+    try std.testing.expect(cls.msgSend(
+        bool,
+        "instancesRespondToSelector:",
+        .{objc.sel("windowWillClose:").value},
+    ));
+}
+
+test "winDelegateClass is idempotent" {
+    const a = try winDelegateClass();
+    const b = try winDelegateClass();
+    try std.testing.expectEqual(a.value, b.value);
+}
+
+test "WkzWindowDelegate ivars round-trip ctx and fn pointers — dispatch fires" {
+    const cls = try winDelegateClass();
+    const obj = cls.msgSend(objc.Object, "alloc", .{})
+        .msgSend(objc.Object, "init", .{});
+    defer obj.msgSend(void, "release", .{});
+
+    // Sentinel that the callback will set. Proves dispatch fires end-to-end.
+    var fired: bool = false;
+    const callback: *const fn (*anyopaque) void = &struct {
+        fn f(p: *anyopaque) void {
+            @as(*bool, @ptrCast(@alignCast(p))).* = true;
+        }
+    }.f;
+    var bundle = CloseBundle{ .ctx = @ptrCast(&fired), .callback = callback };
+
+    // dispatchClose is align(8) — safe to store via @ptrFromInt in an id ivar.
+    const fn_ptr = &dispatchClose;
+    obj.setInstanceVariable(win_ctx_ivar_name, .{ .value = @ptrCast(&bundle) });
+    obj.setInstanceVariable(win_fn_ivar_name, .{ .value = @ptrFromInt(@intFromPtr(fn_ptr)) });
+
+    const got_ctx = obj.getInstanceVariable(win_ctx_ivar_name);
+    const got_fn = obj.getInstanceVariable(win_fn_ivar_name);
+    try std.testing.expect(got_ctx.value != null);
+    try std.testing.expect(got_fn.value != null);
+
+    // Invoke dispatch: fn_ptr(bundle_ptr) → dispatchClose → callback(ctx) → fired=true.
+    const recovered_fn: *const fn (*anyopaque) void = @ptrCast(@alignCast(got_fn.value));
+    recovered_fn(got_ctx.value.?);
+    try std.testing.expect(fired);
+}
+
+test "Window.setCloseHandler signature matches spec" {
+    const params = @typeInfo(@TypeOf(Window.setCloseHandler)).@"fn".params;
+    // self: *Window, ctx: *anyopaque, callback: *const fn(*anyopaque) void
+    try std.testing.expectEqual(@as(usize, 3), params.len);
+}
 
 test {
     std.testing.refAllDecls(@This());

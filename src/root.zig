@@ -4,8 +4,8 @@
 //! Consumers import this as `@import("wkz")`.
 //!
 //! Exported namespaces:
-//!   - `app`     — NSApplication bootstrap (`App.init`, `activate`, `run`)
-//!   - `window`  — NSWindow creation (`Window.init`, `setTitle`, `deinit`)
+//!   - `app`     — NSApplication bootstrap (`App.init`, `activate`, `run`, `deinit`, `setQuitOnLastWindowClosed`)
+//!   - `window`  — NSWindow creation (`Window.init`, `setTitle`, `deinit`, `setCloseHandler`)
 //!   - `webview` — WKWebView management (`WebView.init`, `attach`, `loadURL`, …)
 //!   - `bridge`  — JS↔Zig typed bridge (`Bridge.init`, `registerHandler`, …)
 //!   - `scheme`  — `app://` scheme handler (`SchemeHandler`, `AssetMap`, `mimeForPath`)
