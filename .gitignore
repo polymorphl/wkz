@@ -1,7 +1,13 @@
+# Zig
 zig-cache/
 .zig-cache/
 zig-out/
 zig-pkg/
+*.a
+# Node
 node_modules/
 dist/
+# MacOS
 .DS_Store
+# Claude
+docs/
