@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>wkz StatusItem Demo</title>
+  <style>
+    body { font-family: system-ui, sans-serif; padding: 2rem; max-width: 480px; }
+    h1 { font-size: 1.2rem; margin-bottom: 1.5rem; }
+    section { margin-bottom: 1.5rem; }
+    h2 { font-size: 0.9rem; color: #555; margin-bottom: 0.5rem; }
+    input { padding: 0.4rem 0.6rem; border: 1px solid #ccc; border-radius: 4px; width: 200px; }
+    button { padding: 0.4rem 0.8rem; border: none; border-radius: 4px;
+             background: #007aff; color: white; cursor: pointer; }
+    button:hover { background: #005fcc; }
+    .status { margin-top: 0.5rem; font-size: 0.85rem; color: #444; min-height: 1.2em; }
+    .counter { font-size: 1rem; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <h1>NSStatusItem Demo</h1>
+
+  <section>
+    <h2>Set Text</h2>
+    <input id="title-input" type="text" placeholder="Menu bar label" value="▶ wkz" />
+    <button id="btn-set-title">Set Title</button>
+    <div class="status" id="status-title"></div>
+  </section>
+
+  <section>
+    <h2>Set Icon (SF Symbol)</h2>
+    <button id="btn-set-icon">Set Icon (circle.fill)</button>
+    <div class="status" id="status-icon"></div>
+  </section>
+
+  <section>
+    <h2>Remove from Menu Bar</h2>
+    <button id="btn-remove">Remove</button>
+    <div class="status" id="status-remove"></div>
+  </section>
+
+  <section>
+    <h2>Click Events</h2>
+    <div class="counter">Clicks: <span id="click-count">0</span></div>
+  </section>
+
+  <script>
+    const pendingCalls = new Map();
+    let nextId = 0;
+
+    window.__resolve = function __resolve(id, result) {
+      const pending = pendingCalls.get(id);
+      if (pending === undefined) {
+        console.warn('wkz: __resolve received unknown id=' + id);
+        return;
+      }
+      pendingCalls.delete(id);
+      pending(result);
+    };
+
+    // Event channel — receives statusitem.click from Zig.
+    window.__wkz_event = function (e) {
+      if (e.type === 'statusitem.click') {
+        const el = document.getElementById('click-count');
+        el.textContent = String(Number(el.textContent) + 1);
+      }
+    };
+
+    function invoke(method, params) {
+      const bridge = window.webkit?.messageHandlers?.bridge;
+      if (!bridge) return Promise.reject(new Error('not inside a WKWebView'));
+      const id = nextId;
+      nextId = nextId < Number.MAX_SAFE_INTEGER ? nextId + 1 : 0;
+      return new Promise((resolve) => {
+        pendingCalls.set(id, resolve);
+        bridge.postMessage(JSON.stringify({ method, params: params || {}, id }));
+      });
+    }
+
+    document.getElementById('btn-set-title').addEventListener('click', async () => {
+      const title = document.getElementById('title-input').value.trim() || '▶ wkz';
+      await invoke('statusitem.set', { title });
+      document.getElementById('status-title').textContent = `Title set to "${title}"`;
+    });
+
+    document.getElementById('btn-set-icon').addEventListener('click', async () => {
+      await invoke('statusitem.set', { icon: 'circle.fill' });
+      document.getElementById('status-icon').textContent = 'Icon set to circle.fill';
+    });
+
+    document.getElementById('btn-remove').addEventListener('click', async () => {
+      await invoke('statusitem.remove', {});
+      document.getElementById('status-remove').textContent = 'Status item removed';
+    });
+  </script>
+</body>
+</html>

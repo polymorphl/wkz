@@ -1,0 +1,16 @@
+.{
+    .name = .statusitem,
+    .version = "0.0.0",
+    .fingerprint = 0x8c1f6c4607593b55,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .wkz = .{
+            .path = "../..",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
