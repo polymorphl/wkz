@@ -18,7 +18,7 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     const app = try wkz.app.App.init();
-    const window = try wkz.window.Window.init(720, 540, "wkz FS Demo");
+    const window = try wkz.window.Window.init(.{ .width = 720, .height = 540, .title = "wkz FS Demo" });
     const webview = try wkz.webview.WebView.init();
     webview.attach(window);
 
