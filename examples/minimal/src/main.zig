@@ -3,7 +3,7 @@ const wkz = @import("wkz");
 pub fn main() !void {
     var app = try wkz.app.App.init();
 
-    var window = try wkz.window.Window.init(800, 600, "minimal");
+    var window = try wkz.window.Window.init(.{ .width = 800, .height = 600, .title = "minimal" });
     defer window.deinit();
 
     var webview = try wkz.webview.WebView.init();

@@ -54,7 +54,12 @@ pub fn main() !void {
         .standard_window_menu = true,
     });
 
-    var window = try wkz.window.Window.init(800, 600, "wkz menu example");
+    var window = try wkz.window.Window.init(.{
+        .width = 800,
+        .height = 600,
+        .title = "wkz menu example",
+        .titlebar = .transparent,
+    });
     defer window.deinit();
 
     var webview = try wkz.webview.WebView.init();

@@ -37,7 +37,7 @@ pub fn main() !void {
     const cascade_start = wkz.window.CGPoint{ .x = 100, .y = 700 };
 
     // Window A — ctx_a must not move after setCloseHandler (stack-pinned here).
-    var window_a = try wkz.window.Window.init(800, 600, "Window A");
+    var window_a = try wkz.window.Window.init(.{ .width = 800, .height = 600, .title = "Window A" });
     defer window_a.deinit();
     const cascade_next = window_a.cascadeFrom(cascade_start);
     var ctx_a = WinCtx{ .label = "Window A" };
@@ -51,7 +51,7 @@ pub fn main() !void {
     );
 
     // Window B — ctx_b must not move after setCloseHandler (stack-pinned here).
-    var window_b = try wkz.window.Window.init(800, 600, "Window B");
+    var window_b = try wkz.window.Window.init(.{ .width = 800, .height = 600, .title = "Window B" });
     defer window_b.deinit();
     _ = window_b.cascadeFrom(cascade_next);
     var ctx_b = WinCtx{ .label = "Window B" };

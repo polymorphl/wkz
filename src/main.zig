@@ -43,7 +43,7 @@ pub fn main() !void {
 
     // Centered, titled/closable/resizable window. It must outlive the run loop;
     // see the lifetime note on `run()` below for why no deinit is called.
-    const window = try wkz.window.Window.init(900, 600, "wkz");
+    const window = try wkz.window.Window.init(.{ .width = 900, .height = 600, .title = "wkz" });
 
     // Prod: build a SchemeHandler backed by the embedded asset map and create the
     // WKWebView with the scheme pre-registered on its configuration.
