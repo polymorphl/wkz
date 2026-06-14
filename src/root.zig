@@ -12,6 +12,7 @@
 //!   - `fs`      — file system bridge handlers (`Fs.init`, `registerBridgeHandlers`)
 //!   - `menu`    — NSMenuBar construction (`MenuAction`, `MenuItem`, `AppMenuConfig`, `MenuBarConfig`, `setMenuBar`, `installDefaultMenu`)
 //!   - `alert`   — NSAlert modal dialog (`registerAlertHandler`)
+//!   - `statusitem` — NSStatusItem menu-bar status item (`StatusItem.init`, `registerBridgeHandlers`, `deinit`)
 
 const std = @import("std");
 
@@ -40,6 +41,9 @@ pub const menu = @import("menu.zig");
 
 // Alert module: native NSAlert modal dialog via alert.show bridge handler.
 pub const alert = @import("alert.zig");
+
+// StatusItem module: NSStatusBar item bridge handlers (set, remove).
+pub const statusitem = @import("statusitem.zig");
 
 test {
     std.testing.refAllDecls(@This());
