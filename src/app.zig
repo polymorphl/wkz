@@ -1,12 +1,12 @@
 //! NSApplication bootstrap and lifecycle.
 //!
 //! Responsibility: create the shared NSApplication, set activation policy
-//! (.regular), install the application menu (incl. Cmd+Q), and own the main run
-//! loop. Everything here runs on the main thread.
+//! (.regular), and own the main run loop. Menu installation is now handled
+//! via setMenuBar / installDefaultMenu. Everything here runs on the main thread.
 
 const std = @import("std");
 const objc = @import("objc");
-const updater_mod = @import("updater.zig");
+const menu_mod = @import("menu.zig");
 
 const c = objc.c;
 
@@ -61,10 +61,8 @@ pub const Error = error{
 
 /// The shared application object plus its bootstrap state.
 ///
-/// Holds no owned Objective-C objects: `NSApp` is a process-wide singleton
-/// owned by AppKit, and the menu objects are handed to AppKit (which retains
-/// them) before being released here. There is therefore nothing to release in
-/// a deinit, and none is provided.
+/// Owns `delegate` (if set) and `menu_target` (if set). Both are released
+/// in `deinit`. `ns_app` is the AppKit process singleton — not owned by us.
 pub const App = struct {
     /// The shared `NSApplication` instance (`NSApp`). Owned by AppKit, not us.
     ns_app: objc.Object,
@@ -72,14 +70,17 @@ pub const App = struct {
     /// `setQuitOnLastWindowClosed`. Null until that method is first called.
     /// Owned: must be released in `deinit`.
     delegate: ?objc.Object = null,
+    /// Owned WkzMenuTarget instance (+1). Set by setMenuBar. Released in deinit.
+    menu_target: ?objc.Object = null,
+    /// Allocator used for the action table in setMenuBar. Stored so deinit can free it.
+    menu_alloc: ?std.mem.Allocator = null,
 
     /// Create/obtain the shared application and configure it as a regular,
-    /// menu-bar app with a Cmd+Q quit item.
+    /// menu-bar app. Menu installation is deferred to setMenuBar /
+    /// installDefaultMenu.
     ///
     /// Must be called on the main thread. `+[NSApplication sharedApplication]`
-    /// returns the process-wide singleton (no ownership transfer), so nothing
-    /// here needs releasing on the returned `App`. The transient menu objects
-    /// created during setup are released after AppKit takes ownership of them.
+    /// returns the process-wide singleton (no ownership transfer).
     pub fn init() Error!App {
         const NSApplication = objc.getClass("NSApplication") orelse
             return Error.ClassNotFound;
@@ -90,8 +91,6 @@ pub const App = struct {
         // Regular app: Dock icon + menu bar. setActivationPolicy: takes an
         // NSInteger (c_long) and returns BOOL; we ignore the result.
         _ = ns_app.msgSend(bool, "setActivationPolicy:", .{NSApplicationActivationPolicyRegular});
-
-        try installMenu(ns_app);
 
         return .{ .ns_app = ns_app };
     }
@@ -110,62 +109,54 @@ pub const App = struct {
         self.ns_app.msgSend(void, "activateIgnoringOtherApps:", .{true});
     }
 
-    /// Add "Check for Updates…" to the app menu (first submenu of the main menu).
-    /// Inserts the item at index 0 with a separator below it.
-    ///
-    /// Note (v0.1): the menu item's `checkForUpdates:` action is not wired to a
-    /// live ObjC handler. In v0.1 the actual check is driven from the frontend via
-    /// the bridge. The menu item serves as a visual hook for future wiring.
-    ///
-    /// `upd` is stored via the bridge context (`registerBridgeHandlers`); this
-    /// function does not use it directly.
-    ///
-    /// Must be called on the main thread, after `App.init()`.
-    pub fn addCheckForUpdatesItem(
-        self: App,
+    /// Build and install a full NSMenuBar from config. Allocates a WkzMenuTarget
+    /// instance (if not already created) and an action table for zig/bridge items.
+    /// Replaces any previously installed menu. Must be called before app.run(),
+    /// on the main thread.
+    pub fn setMenuBar(
+        self: *App,
         allocator: std.mem.Allocator,
-        upd: *updater_mod.Updater,
-    ) Error!void {
-        _ = allocator;
-        _ = upd;
-
-        const NSMenuItem = objc.getClass("NSMenuItem") orelse return Error.ClassNotFound;
-
-        const main_menu = self.ns_app.msgSend(objc.Object, "mainMenu", .{});
-        if (main_menu.value == null) return Error.ClassNotFound;
-
-        const app_item = main_menu.msgSend(objc.Object, "itemAtIndex:", .{@as(c_long, 0)});
-        if (app_item.value == null) return Error.ClassNotFound;
-
-        const app_menu = app_item.msgSend(objc.Object, "submenu", .{});
-        if (app_menu.value == null) return Error.ClassNotFound;
-
-        // Separator inserted first (at index 0), then item inserted at 0 (above separator).
-        const sep = NSMenuItem.msgSend(objc.Object, "separatorItem", .{});
-        app_menu.msgSend(void, "insertItem:atIndex:", .{ sep, @as(c_long, 0) });
-
-        // "Check for Updates…" item — title built from a compile-time literal.
-        const NSString = objc.getClass("NSString") orelse return Error.ClassNotFound;
-        const title = nsString(NSString, "Check for Updates\u{2026}");
-        defer title.msgSend(void, "release", .{});
-
-        const empty_key = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{@as([*:0]const u8, "")});
-
-        const item = NSMenuItem.msgSend(objc.Object, "alloc", .{})
-            .msgSend(objc.Object, "initWithTitle:action:keyEquivalent:", .{
-            title,
-            objc.sel("checkForUpdates:"),
-            empty_key,
-        });
-        defer item.msgSend(void, "release", .{});
-
-        app_menu.msgSend(void, "insertItem:atIndex:", .{ item, @as(c_long, 0) });
+        config: menu_mod.MenuBarConfig,
+    ) (Error || menu_mod.Error)!void {
+        const cls = try menu_mod.menuTargetClass();
+        const target_was_null = self.menu_target == null;
+        if (target_was_null) {
+            self.menu_target = cls.msgSend(objc.Object, "alloc", .{})
+                .msgSend(objc.Object, "init", .{});
+        }
+        // On buildMenuBar error: release menu_target only if we allocated it this call.
+        // If it was already set from a previous successful call, leave it alive for deinit.
+        errdefer if (target_was_null) {
+            self.menu_target.?.msgSend(void, "release", .{});
+            self.menu_target = null;
+        };
+        // Free old action table with the allocator that owns it, then clear the
+        // field so deinit is a no-op if buildMenuBar errors below.
+        // self.menu_alloc is set to the new allocator only after buildMenuBar succeeds,
+        // maintaining the invariant: menu_alloc == allocator that owns g_action_table.
+        if (self.menu_alloc) |alloc| menu_mod.freeActionTable(alloc);
+        self.menu_alloc = null;
+        try menu_mod.buildMenuBar(allocator, self.ns_app, config, self.menu_target.?);
+        self.menu_alloc = allocator;
     }
 
-    /// Release the owned delegate reference (if set). Does NOT release ns_app —
-    /// it is the AppKit process singleton, not owned by us.
+    /// Install a minimal menu: Hide/Show All + Quit [name] (Cmd+Q).
+    /// Convenience for apps that don't need custom zig/bridge menu actions.
+    /// Uses std.heap.page_allocator — safe to store in menu_alloc since
+    /// page_allocator is a statically-known singleton (no stack state).
+    /// Must be called before app.run(), on the main thread.
+    pub fn installDefaultMenu(self: *App, name: [:0]const u8) (Error || menu_mod.Error)!void {
+        try self.setMenuBar(std.heap.page_allocator, .{
+            .app = .{ .name = name },
+        });
+    }
+
+    /// Release owned ObjC objects and free the menu action table if allocated.
+    /// Does NOT release ns_app — it is the AppKit process singleton.
     pub fn deinit(self: App) void {
         if (self.delegate) |d| d.msgSend(void, "release", .{});
+        if (self.menu_target) |t| t.msgSend(void, "release", .{});
+        if (self.menu_alloc) |alloc| menu_mod.freeActionTable(alloc);
     }
 
     /// Wire quit-on-last-window-close behaviour. Registers WkzAppDelegate (once,
@@ -185,66 +176,6 @@ pub const App = struct {
         self.ns_app.msgSend(void, "setDelegate:", .{delegate});
     }
 };
-
-/// Build the application menu with a single Quit item bound to Cmd+Q
-/// (the `terminate:` selector) and install it as the app's main menu.
-///
-/// Ownership: each `alloc`/`init`'d Objective-C object created here is released
-/// once AppKit retains it (menus retain their items; an app retains its main
-/// menu; a menu item retains its submenu). `defer release` on every object
-/// keeps the net retain count correct on all paths. No ARC.
-fn installMenu(ns_app: objc.Object) Error!void {
-    const NSMenu = objc.getClass("NSMenu") orelse return Error.ClassNotFound;
-    const NSMenuItem = objc.getClass("NSMenuItem") orelse return Error.ClassNotFound;
-    const NSString = objc.getClass("NSString") orelse return Error.ClassNotFound;
-
-    // The menu bar itself.
-    const main_menu = NSMenu.msgSend(objc.Object, "alloc", .{})
-        .msgSend(objc.Object, "init", .{});
-    defer main_menu.msgSend(void, "release", .{});
-
-    // The (titleless) container item that the application submenu hangs off of.
-    const app_item = NSMenuItem.msgSend(objc.Object, "alloc", .{})
-        .msgSend(objc.Object, "init", .{});
-    defer app_item.msgSend(void, "release", .{});
-    // main_menu retains app_item.
-    main_menu.msgSend(void, "addItem:", .{app_item});
-
-    // The application submenu (holds the Quit item).
-    const app_menu = NSMenu.msgSend(objc.Object, "alloc", .{})
-        .msgSend(objc.Object, "init", .{});
-    defer app_menu.msgSend(void, "release", .{});
-    // app_item retains app_menu as its submenu.
-    app_item.msgSend(void, "setSubmenu:", .{app_menu});
-
-    // Quit item: title "Quit", action terminate:, key equivalent "q" (Cmd+Q).
-    const quit_title = nsString(NSString, "Quit");
-    defer quit_title.msgSend(void, "release", .{});
-    const quit_key = nsString(NSString, "q");
-    defer quit_key.msgSend(void, "release", .{});
-
-    const quit_item = NSMenuItem.msgSend(objc.Object, "alloc", .{})
-        .msgSend(objc.Object, "initWithTitle:action:keyEquivalent:", .{
-        quit_title,
-        objc.sel("terminate:"),
-        quit_key,
-    });
-    defer quit_item.msgSend(void, "release", .{});
-    // app_menu retains quit_item.
-    app_menu.msgSend(void, "addItem:", .{quit_item});
-
-    // The app retains its main menu.
-    ns_app.msgSend(void, "setMainMenu:", .{main_menu});
-}
-
-/// Returns a `+1` NSString built from a UTF-8 C string. Caller owns it and must
-/// `release` it. `-[NSString stringWithUTF8String:]` returns an autoreleased
-/// string; since wkz drains no autorelease pool here, we `retain` it to get a
-/// deterministic, ARC-free `+1` reference the caller releases explicitly.
-fn nsString(NSString: objc.Class, comptime literal: [:0]const u8) objc.Object {
-    const str = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{literal.ptr});
-    return str.msgSend(objc.Object, "retain", .{});
-}
 
 test "activation policy constant matches AppKit" {
     // NSApplicationActivationPolicyRegular == 0.
@@ -278,10 +209,10 @@ test "Error set is exactly {ClassNotFound}" {
 }
 
 test "required AppKit classes resolve in the runtime" {
-    // init()/installMenu() look up these classes and return Error.ClassNotFound
-    // if any is missing. Verifying they resolve documents that AppKit is linked
-    // and that the success path of init() will not hit ClassNotFound. Pure
-    // runtime lookups — no window-server connection, safe headless.
+    // init() looks up NSApplication and returns Error.ClassNotFound if missing.
+    // Verifying they resolve documents that AppKit is linked and that the
+    // success path of init() will not hit ClassNotFound. Pure runtime lookups —
+    // no window-server connection, safe headless.
     try std.testing.expect(objc.getClass("NSApplication") != null);
     try std.testing.expect(objc.getClass("NSMenu") != null);
     try std.testing.expect(objc.getClass("NSMenuItem") != null);
@@ -299,28 +230,24 @@ test "terminate: selector (Cmd+Q action) is registerable" {
 //     server; see manual checklist for the GUI behaviour run() drives) ---
 
 test "init() returns a configured App with a live NSApp singleton" {
-    // Empirically headless-safe: sharedApplication, setActivationPolicy:, and
-    // menu construction complete without a window server. We deliberately do
-    // NOT call run() (blocks on the run loop) and do NOT call activate() in CI
-    // (foregrounding is GUI behaviour covered by the manual checklist).
-    const app = App.init() catch |e| {
-        // ClassNotFound only if AppKit failed to link — fatal, surface it.
+    var app = App.init() catch |e| {
         std.debug.print("init() failed: {s}\n", .{@errorName(e)});
         return e;
     };
+    defer app.deinit();
 
-    // The singleton handle must be non-nil.
+    // Singleton handle must be non-nil.
     try std.testing.expect(app.ns_app.value != null);
 
-    // sharedApplication is idempotent: a second call returns the same pointer.
+    // sharedApplication is idempotent.
     const again = try App.init();
     try std.testing.expectEqual(app.ns_app.value, again.ns_app.value);
 
-    // setMainMenu: ran inside init(); mainMenu must now be non-nil and its
-    // first item must carry the application submenu we attached.
+    // init() no longer installs a menu — installDefaultMenu does.
+    try app.installDefaultMenu("TestApp");
+
     const main_menu = app.ns_app.msgSend(objc.Object, "mainMenu", .{});
     try std.testing.expect(main_menu.value != null);
-
     const count = main_menu.msgSend(c_long, "numberOfItems", .{});
     try std.testing.expect(count >= 1);
 
@@ -329,22 +256,23 @@ test "init() returns a configured App with a live NSApp singleton" {
     const submenu = app_item.msgSend(objc.Object, "submenu", .{});
     try std.testing.expect(submenu.value != null);
 
-    // The submenu holds exactly the Quit item, titled "Quit", bound to
-    // terminate: with key equivalent "q".
+    // App menu must contain at least Hide + HideOthers + ShowAll + Quit = 4 items + separator.
     const sub_count = submenu.msgSend(c_long, "numberOfItems", .{});
-    try std.testing.expectEqual(@as(c_long, 1), sub_count);
+    try std.testing.expect(sub_count >= 4);
 
-    const quit_item = submenu.msgSend(objc.Object, "itemAtIndex:", .{@as(c_long, 0)});
-    try std.testing.expect(quit_item.value != null);
-    try std.testing.expect(quit_item.msgSend(objc.c.SEL, "action", .{}) == objc.sel("terminate:").value);
+    // Last item must be "Quit TestApp" bound to terminate:.
+    const quit_item = submenu.msgSend(objc.Object, "itemAtIndex:", .{sub_count - 1});
+    try std.testing.expect(quit_item.msgSend(c.SEL, "action", .{}) == objc.sel("terminate:").value);
 
-    const key = quit_item.msgSend(objc.Object, "keyEquivalent", .{});
-    const key_utf8 = key.msgSend([*:0]const u8, "UTF8String", .{});
-    try std.testing.expectEqualStrings("q", std.mem.span(key_utf8));
+    // Key equivalent must be "q" (Cmd+Q).
+    const quit_key = quit_item.msgSend(objc.Object, "keyEquivalent", .{});
+    const quit_key_utf8 = quit_key.msgSend([*:0]const u8, "UTF8String", .{});
+    try std.testing.expectEqualStrings("q", std.mem.span(quit_key_utf8));
 
-    const title = quit_item.msgSend(objc.Object, "title", .{});
-    const title_utf8 = title.msgSend([*:0]const u8, "UTF8String", .{});
-    try std.testing.expectEqualStrings("Quit", std.mem.span(title_utf8));
+    // Title must be "Quit TestApp" — verifies config.app.name propagated.
+    const quit_title = quit_item.msgSend(objc.Object, "title", .{});
+    const quit_title_utf8 = quit_title.msgSend([*:0]const u8, "UTF8String", .{});
+    try std.testing.expectEqualStrings("Quit TestApp", std.mem.span(quit_title_utf8));
 }
 
 test "App struct has delegate field of type ?objc.Object" {
@@ -377,6 +305,23 @@ test "appDelegateClass is idempotent" {
 test "setQuitOnLastWindowClosed signature matches spec" {
     const Ret = @typeInfo(@TypeOf(App.setQuitOnLastWindowClosed)).@"fn".return_type.?;
     try std.testing.expectEqual(Error!void, Ret);
+}
+
+test "App has menu_target and menu_alloc fields" {
+    try std.testing.expect(@hasField(App, "menu_target"));
+    try std.testing.expect(@hasField(App, "menu_alloc"));
+    try std.testing.expectEqual(?objc.Object, @FieldType(App, "menu_target"));
+    try std.testing.expectEqual(?std.mem.Allocator, @FieldType(App, "menu_alloc"));
+}
+
+test "App.setMenuBar takes *App, allocator, MenuBarConfig" {
+    const params = @typeInfo(@TypeOf(App.setMenuBar)).@"fn".params;
+    try std.testing.expectEqual(@as(usize, 3), params.len);
+}
+
+test "App.installDefaultMenu takes *App and [:0]const u8" {
+    const params = @typeInfo(@TypeOf(App.installDefaultMenu)).@"fn".params;
+    try std.testing.expectEqual(@as(usize, 2), params.len);
 }
 
 test {

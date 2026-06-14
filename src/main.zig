@@ -38,6 +38,9 @@ pub fn main() !void {
     // created, so App.init() runs first.
     var app = try wkz.app.App.init();
 
+    // Install the default menu bar (with Cmd+Q quit handler).
+    try app.installDefaultMenu("wkz");
+
     // Centered, titled/closable/resizable window. It must outlive the run loop;
     // see the lifetime note on `run()` below for why no deinit is called.
     const window = try wkz.window.Window.init(900, 600, "wkz");

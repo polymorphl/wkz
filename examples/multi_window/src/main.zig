@@ -26,8 +26,11 @@ fn onClose(ptr: *anyopaque) void {
 
 pub fn main() !void {
     var app = try wkz.app.App.init();
-    try app.setQuitOnLastWindowClosed(true);
     defer app.deinit();
+    try app.setQuitOnLastWindowClosed(true);
+
+    // Install the default menu bar (with Cmd+Q quit handler).
+    try app.installDefaultMenu("wkz multi-window");
 
     // Cascade layout: position windows so they don't overlap.
     // cascadeFrom returns the suggested top-left for the next window.

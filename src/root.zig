@@ -4,12 +4,13 @@
 //! Consumers import this as `@import("wkz")`.
 //!
 //! Exported namespaces:
-//!   - `app`     — NSApplication bootstrap (`App.init`, `activate`, `run`, `deinit`, `setQuitOnLastWindowClosed`)
-//!   - `window`  — NSWindow creation (`Window.init`, `setTitle`, `deinit`, `setCloseHandler`)
+//!   - `app`     — NSApplication bootstrap (`App.init`, `activate`, `run`, `deinit`, `setQuitOnLastWindowClosed`, `setMenuBar`, `installDefaultMenu`)
+//!   - `window`  — NSWindow creation (`Window.init`, `setTitle`, `deinit`, `setCloseHandler`, `setPosition`, `cascadeFrom`)
 //!   - `webview` — WKWebView management (`WebView.init`, `attach`, `loadURL`, …)
 //!   - `bridge`  — JS↔Zig typed bridge (`Bridge.init`, `registerHandler`, …)
 //!   - `scheme`  — `app://` scheme handler (`SchemeHandler`, `AssetMap`, `mimeForPath`)
 //!   - `fs`      — file system bridge handlers (`Fs.init`, `registerBridgeHandlers`)
+//!   - `menu`    — NSMenuBar construction (`MenuAction`, `MenuItem`, `AppMenuConfig`, `MenuBarConfig`, `setMenuBar`, `installDefaultMenu`)
 
 const std = @import("std");
 
@@ -32,6 +33,9 @@ pub const updater = @import("updater.zig");
 
 // Fs module: file system bridge handlers (open dialog, read, write).
 pub const fs = @import("fs.zig");
+
+// Menu module: NSMenuBar construction and menu action routing.
+pub const menu = @import("menu.zig");
 
 test {
     std.testing.refAllDecls(@This());
