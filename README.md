@@ -93,6 +93,7 @@ Each example is a standalone Zig package using wkz as a local path dependency â€
 | [`examples/minimal/`](examples/minimal/) | Smallest possible app: window + WKWebView + inline HTML. No bridge, no assets. |
 | [`examples/updater/`](examples/updater/) | Auto-updater wired through the JSâ†”Zig bridge: check / download / install flow with a sample manifest. |
 | [`examples/fs/`](examples/fs/) | File system bridge: native open dialog (NSOpenPanel), read text/binary, write text. |
+| [`examples/titlebar/`](examples/titlebar/) | Titlebar styles: two windows side by side demonstrating `.transparent` and `.hidden` `TitlebarStyle` variants. |
 | [`examples/menu/`](examples/menu/) | Menu API: full `NSMenuBar` with Zig callback handler, native selectors, and standard Edit/Window menus. |
 | [`examples/multi_window/`](examples/multi_window/) | Multi-window: two independent windows with close callbacks and quit-on-last-close policy. |
 
