@@ -10,18 +10,20 @@ Think *"the [wry](https://github.com/tauri-apps/wry) layer of Tauri, for macOS, 
 
 - **Zig 0.16.x** — verify with `zig version`; no other version is supported.
 - **Xcode Command Line Tools** — `xcode-select --install` (macOS frameworks + SDK).
-- **Node.js** — for the Vite frontend; optional unless you work on the UI.
+- **Node.js** — for the Vite frontend in `examples/basic/`; optional unless you work on that example.
 
 ## Quick start
 
 ```sh
-zig build                  # build the library + example
-zig build run -Ddev=true   # run against the Vite dev server (http://localhost:5173)
-zig build test             # run all tests (headless)
-cd frontend && npm run dev  # start the Vite dev server
+zig build test                      # run all library tests (headless)
+
+# run the basic example (Vite frontend)
+cd examples/basic
+zig build run -Ddev=true            # dev: loads http://localhost:5173
+cd frontend && npm run dev           # start the Vite dev server
 ```
 
-Dev vs prod is the **`-Ddev` build option**, not a runtime switch:
+In examples that embed a frontend, dev vs prod is the **`-Ddev` build option**, not a runtime switch:
 
 - `-Ddev=true` — the WKWebView loads `http://localhost:5173`.
 - release (default) — an `app://` URL scheme handler serves `@embedFile`'d Vite output.
@@ -30,7 +32,6 @@ Dev vs prod is the **`-Ddev` build option**, not a runtime switch:
 
 | Path | Responsibility |
 |------|----------------|
-| `src/main.zig` | Runnable example; what `zig build run` launches. |
 | `src/app.zig` | NSApplication bootstrap: activation policy, run loop, `setMenuBar`/`installDefaultMenu`. |
 | `src/menu.zig` | Menu API: `MenuBarConfig` types, `WkzMenuTarget` ObjC class, action dispatch. |
 | `src/window.zig` | NSWindow: titled/closable/resizable, centered, makeKeyAndOrderFront. |
@@ -39,8 +40,9 @@ Dev vs prod is the **`-Ddev` build option**, not a runtime switch:
 | `src/scheme.zig` | `app://` WKURLSchemeHandler serving embedded `dist/` assets in prod. |
 | `src/objc_helpers.zig` | Objective-C runtime glue (class creation, selectors, encodings). |
 | `src/root.zig` | Public API surface — re-exports the supported types/functions. |
-| `frontend/` | Framework-agnostic web UI (Vite, vanilla-ts). |
 | `bridge-js/` | Typed TS client (`@wkz/bridge`): `invoke<T>(method, params)`. |
+| `tools/gen_assets.zig` | Build-time code generator: walks `dist/` and emits Zig with `@embedFile` entries. |
+| `examples/basic/` | Full example: bridge, scheme handler, embedded Vite frontend, `.app` bundle. |
 
 ## Dependency
 
@@ -90,6 +92,7 @@ Each example is a standalone Zig package using wkz as a local path dependency �
 
 | Example | What it shows |
 |---------|---------------|
+| [`examples/basic/`](examples/basic/) | Full-stack example: bridge, `app://` scheme handler, embedded Vite frontend, `.app` bundle. Supports `-Ddev=true` for hot-reload. |
 | [`examples/minimal/`](examples/minimal/) | Smallest possible app: window + WKWebView + inline HTML. No bridge, no assets. |
 | [`examples/updater/`](examples/updater/) | Auto-updater wired through the JS↔Zig bridge: check / download / install flow with a sample manifest. |
 | [`examples/fs/`](examples/fs/) | File system bridge: native open dialog (NSOpenPanel), read text/binary, write text. |
