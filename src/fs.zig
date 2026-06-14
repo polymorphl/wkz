@@ -31,6 +31,7 @@ pub const Fs = struct {
         try bridge.registerHandler("fs.readText", handleReadText);
         try bridge.registerHandler("fs.readBinary", handleReadBinary);
         try bridge.registerHandler("fs.writeText", handleWriteText);
+        try bridge.registerHandler("fs.savePanel", handleSavePanel);
     }
 };
 
@@ -238,6 +239,128 @@ fn handleWriteText(bridge: *Bridge, params: std.json.Value, id: ?i64) void {
         return;
     };
     if (id) |i| bridge.resolve(i, "null") catch {};
+}
+
+test "NSSavePanel class resolves in ObjC runtime" {
+    try std.testing.expect(objc.getClass("NSSavePanel") != null);
+}
+
+test "NSSavePanel instances respond to required selectors" {
+    const NSSavePanel = objc.getClass("NSSavePanel").?;
+    const selectors = [_][:0]const u8{
+        "runModal",
+        "URL",
+        "setNameFieldStringValue:",
+    };
+    inline for (selectors) |name| {
+        try std.testing.expect(NSSavePanel.msgSend(
+            bool,
+            "instancesRespondToSelector:",
+            .{objc.sel(name).value},
+        ));
+    }
+    // savePanel is the class-level factory method used in handleSavePanel.
+    try std.testing.expect(NSSavePanel.msgSend(bool, "respondsToSelector:", .{objc.sel("savePanel").value}));
+}
+
+test "registerBridgeHandlers registers fs.savePanel and all 5 fs handlers" {
+    // Bridge.init is headless-safe: it creates the ObjC handler class via the
+    // runtime (no window server needed, proven by bridge.zig's makeTestBridge
+    // tests). Passing nil ucc/webview is safe: messaging nil is a no-op in ObjC,
+    // so deinit's removeScriptMessageHandlerForName: against a nil ucc is harmless.
+    var bridge = try Bridge.init(
+        std.testing.allocator,
+        .{ .value = null }, // ucc: nil, headless
+        .{ .value = null }, // webview: nil, headless
+    );
+    defer bridge.deinit();
+
+    var fs = Fs.init(std.testing.allocator);
+    try fs.registerBridgeHandlers(&bridge);
+
+    // All 5 handlers must be present.
+    // bridge.dispatch is a std.StringHashMap(Handler):
+    //   count (hash_map.zig:779): pub fn count(self: Self) Size
+    //   contains (hash_map.zig:1214): pub fn contains(self: Self, key: K) bool
+    try std.testing.expectEqual(@as(u32, 5), bridge.dispatch.count());
+    try std.testing.expect(bridge.dispatch.contains("fs.openFile"));
+    try std.testing.expect(bridge.dispatch.contains("fs.readText"));
+    try std.testing.expect(bridge.dispatch.contains("fs.readBinary"));
+    try std.testing.expect(bridge.dispatch.contains("fs.writeText"));
+    try std.testing.expect(bridge.dispatch.contains("fs.savePanel"));
+}
+
+/// Resolves with {"path":"/absolute/path"} when user picks a save location, or "null" if cancelled.
+fn handleSavePanel(bridge: *Bridge, params: std.json.Value, id: ?i64) void {
+    const self: *Fs = @ptrCast(@alignCast(bridge.context.?));
+
+    const NSSavePanel = objc.getClass("NSSavePanel") orelse {
+        log.warn("fs.savePanel: NSSavePanel class not found in ObjC runtime", .{});
+        if (id) |i| bridge.resolve(i, "null") catch {};
+        return;
+    };
+    const NSString = objc.getClass("NSString") orelse {
+        log.warn("fs.savePanel: NSString class not found in ObjC runtime", .{});
+        if (id) |i| bridge.resolve(i, "null") catch {};
+        return;
+    };
+
+    // savePanel returns an autoreleased panel — do NOT release.
+    const panel = NSSavePanel.msgSend(objc.Object, "savePanel", .{});
+
+    // Optional suggested filename — skip if absent or empty string.
+    const filename_or_null: ?[]const u8 = blk: {
+        const obj = switch (params) {
+            .object => |o| o,
+            else => break :blk null,
+        };
+        const val = obj.get("filename") orelse break :blk null;
+        break :blk switch (val) {
+            .string => |s| if (s.len > 0) s else null,
+            else => null,
+        };
+    };
+    if (filename_or_null) |fname| {
+        const fname_z = std.fmt.allocPrintSentinel(self.allocator, "{s}", .{fname}, 0) catch {
+            log.warn("fs.savePanel: OOM allocating filename NSString", .{});
+            if (id) |i| bridge.resolve(i, "null") catch {};
+            return;
+        };
+        defer self.allocator.free(fname_z);
+        const ns_fname = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{fname_z.ptr})
+            .msgSend(objc.Object, "retain", .{});
+        defer ns_fname.msgSend(void, "release", .{});
+        panel.msgSend(void, "setNameFieldStringValue:", .{ns_fname});
+    }
+
+    const response = panel.msgSend(c_long, "runModal", .{});
+    if (response != 1) {
+        // User cancelled (NSModalResponseCancel = 0) or window closed.
+        if (id) |i| bridge.resolve(i, "null") catch {};
+        return;
+    }
+
+    // URL and path are autoreleased properties — do NOT release.
+    const url = panel.msgSend(objc.Object, "URL", .{});
+    const path_nsstring = url.msgSend(objc.Object, "path", .{});
+    const path_cstr = path_nsstring.msgSend(?[*:0]const u8, "UTF8String", .{}) orelse {
+        log.warn("fs.savePanel: UTF8String returned null for selected URL path", .{});
+        if (id) |i| bridge.resolve(i, "null") catch {};
+        return;
+    };
+    const path = std.mem.span(path_cstr);
+
+    const json = std.json.Stringify.valueAlloc(
+        self.allocator,
+        .{ .path = path },
+        .{},
+    ) catch {
+        log.warn("fs.savePanel: json serialization failed (OOM)", .{});
+        if (id) |i| bridge.resolve(i, "null") catch {};
+        return;
+    };
+    defer self.allocator.free(json);
+    if (id) |i| bridge.resolve(i, json) catch {};
 }
 
 test "encodeBase64 known vector" {
