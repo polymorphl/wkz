@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>wkz Alert Demo</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+      font-size: 14px;
+      background: #1e1e1e;
+      color: #d4d4d4;
+      padding: 32px;
+    }
+    h1 { font-size: 20px; font-weight: 600; color: #fff; margin-bottom: 24px; }
+    h2 { font-size: 14px; font-weight: 600; color: #aaa; margin-bottom: 10px; }
+    .section { margin-bottom: 28px; padding-bottom: 28px; border-bottom: 1px solid #2e2e2e; }
+    .section:last-child { border-bottom: none; }
+    button {
+      padding: 7px 16px;
+      border: none;
+      border-radius: 5px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      background: #0066cc;
+      color: #fff;
+      margin-right: 8px;
+    }
+    button:hover { background: #0077e6; }
+    .status { font-size: 12px; color: #888; margin: 8px 0; min-height: 18px; }
+    .status.ok  { color: #4ec9b0; }
+    .status.cancel { color: #888; }
+  </style>
+</head>
+<body>
+  <h1>wkz Alert Bridge Demo</h1>
+
+  <div class="section">
+    <h2>Simple Alert</h2>
+    <button id="btn-simple">Show Alert</button>
+    <div id="status-simple" class="status"></div>
+  </div>
+
+  <div class="section">
+    <h2>Confirmation (Critical)</h2>
+    <button id="btn-confirm">Delete File&hellip;</button>
+    <div id="status-confirm" class="status"></div>
+  </div>
+
+  <div class="section">
+    <h2>Informational</h2>
+    <button id="btn-info">Check for Update</button>
+    <div id="status-info" class="status"></div>
+  </div>
+
+  <script>
+    const pendingCalls = new Map();
+    let nextId = 0;
+
+    window.__resolve = function __resolve(id, result) {
+      const pending = pendingCalls.get(id);
+      if (pending === undefined) {
+        console.warn('wkz: __resolve received unknown id=' + id);
+        return;
+      }
+      pendingCalls.delete(id);
+      pending(result);
+    };
+
+    function invoke(method, params) {
+      const bridge = window.webkit?.messageHandlers?.bridge;
+      if (!bridge) return Promise.reject(new Error('not inside a WKWebView'));
+      const id = nextId;
+      nextId = nextId < Number.MAX_SAFE_INTEGER ? nextId + 1 : 0;
+      return new Promise((resolve) => {
+        pendingCalls.set(id, resolve);
+        bridge.postMessage(JSON.stringify({ method, params: params || {}, id }));
+      });
+    }
+
+    document.getElementById('btn-simple').addEventListener('click', async () => {
+      const status = document.getElementById('status-simple');
+      status.className = 'status';
+      status.textContent = 'Showing alert…';
+      const result = await invoke('alert.show', { title: 'Hello from wkz!' });
+      if (result === null) { status.textContent = 'Dismissed.'; return; }
+      status.className = 'status ok';
+      status.textContent = 'Clicked: ' + result.button;
+    });
+
+    document.getElementById('btn-confirm').addEventListener('click', async () => {
+      const status = document.getElementById('status-confirm');
+      status.className = 'status';
+      status.textContent = 'Showing alert…';
+      const result = await invoke('alert.show', {
+        title: 'Delete file?',
+        message: 'This action cannot be undone.',
+        style: 'critical',
+        buttons: ['Cancel', 'Delete'],
+      });
+      if (result === null) { status.textContent = 'Dismissed.'; return; }
+      if (result.button === 'Delete') {
+        status.className = 'status ok';
+        status.textContent = 'Confirmed: Delete';
+      } else {
+        status.className = 'status cancel';
+        status.textContent = 'Cancelled.';
+      }
+    });
+
+    document.getElementById('btn-info').addEventListener('click', async () => {
+      const status = document.getElementById('status-info');
+      status.className = 'status';
+      status.textContent = 'Showing alert…';
+      const result = await invoke('alert.show', {
+        title: 'Update available',
+        message: 'Version 2.0 is ready to install.',
+        style: 'informational',
+        buttons: ['Later', 'Install Now'],
+      });
+      if (result === null) { status.textContent = 'Dismissed.'; return; }
+      status.className = 'status ok';
+      status.textContent = 'Clicked: ' + result.button;
+    });
+  </script>
+</body>
+</html>
