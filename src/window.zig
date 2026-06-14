@@ -14,6 +14,13 @@ const c = objc.c;
 const NSWindowStyleMaskTitled: c_ulong = 1 << 0;
 const NSWindowStyleMaskClosable: c_ulong = 1 << 1;
 const NSWindowStyleMaskResizable: c_ulong = 1 << 3;
+/// `NSWindowStyleMaskFullSizeContentView` — content view fills the full window
+/// frame including the titlebar area. Combined with `setTitlebarAppearsTransparent:`
+/// (and optionally `setTitleVisibility:`) to produce modern macOS app chrome.
+const NSWindowStyleMaskFullSizeContentView: c_ulong = 1 << 15;
+/// `NSWindowTitleHidden` — hides the window title string while keeping the
+/// titlebar (and traffic lights) present. Value 1 per AppKit/NSWindow.h, stable since 10.10.
+const NSWindowTitleHidden: c_long = 1;
 
 /// `NSBackingStoreType` value (AppKit/NSGraphics.h). `Buffered` is the only
 /// backing store store supported on modern macOS.
@@ -44,6 +51,32 @@ pub const CGSize = extern struct {
 pub const CGRect = extern struct {
     origin: CGPoint,
     size: CGSize,
+};
+
+/// Controls how the NSWindow titlebar is rendered.
+///
+/// When using `.transparent` or `.hidden` the web content extends into the
+/// ~28 pt titlebar area. The frontend must reserve that space via CSS:
+///   `body { padding-top: 28px; }` (or `env(safe-area-inset-top, 28px)`).
+pub const TitlebarStyle = enum {
+    /// Standard opaque titlebar. Default — matches pre-`WindowConfig` behaviour.
+    default,
+    /// Transparent titlebar + `NSWindowStyleMaskFullSizeContentView`.
+    /// Web content extends under the titlebar; window title remains visible.
+    transparent,
+    /// Transparent titlebar + `fullSizeContentView` + title hidden.
+    /// Web content fills 100% of the window; traffic lights still present.
+    hidden,
+};
+
+/// Configuration passed to `Window.init`. Replaces the former positional
+/// `(width, height, title)` parameters. All future window options go here.
+pub const WindowConfig = struct {
+    width: CGFloat,
+    height: CGFloat,
+    title: [:0]const u8,
+    /// Titlebar rendering style. Defaults to `.default` (backward-compatible).
+    titlebar: TitlebarStyle = .default,
 };
 
 /// Errors surfaced while creating a window.
@@ -130,23 +163,27 @@ pub const Window = struct {
     /// the `Window` must not move after `setCloseHandler` is called.
     close_bundle: ?CloseBundle = null,
 
-    /// Create a titled/closable/resizable NSWindow of `width`×`height` points,
-    /// center it on screen, apply `title`, and order it to the front.
+    /// Create a titled/closable/resizable NSWindow from `config`, center it on
+    /// screen, and order it to the front. Applies titlebar style via AppKit
+    /// property calls after window creation.
     ///
     /// Must be called on the main thread. On success the returned `Window` owns
     /// a `+1` NSWindow reference that `deinit` releases. On the error path no
-    /// reference is leaked: `errdefer release` balances the alloc/init before
-    /// the title NSString is built.
-    pub fn init(width: CGFloat, height: CGFloat, title: [:0]const u8) Error!Window {
+    /// reference is leaked: `errdefer release` balances the alloc/init.
+    pub fn init(config: WindowConfig) Error!Window {
         const NSWindow = objc.getClass("NSWindow") orelse return Error.ClassNotFound;
         const NSString = objc.getClass("NSString") orelse return Error.ClassNotFound;
 
         const content_rect: CGRect = .{
             .origin = .{ .x = 0, .y = 0 },
-            .size = .{ .width = width, .height = height },
+            .size = .{ .width = config.width, .height = config.height },
         };
-        const style_mask: c_ulong =
+        const base_mask: c_ulong =
             NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable;
+        const style_mask: c_ulong = switch (config.titlebar) {
+            .default => base_mask,
+            .transparent, .hidden => base_mask | NSWindowStyleMaskFullSizeContentView,
+        };
 
         // alloc/init -> +1 reference owned by this struct (released in deinit).
         const ns_window = NSWindow.msgSend(objc.Object, "alloc", .{})
@@ -159,9 +196,21 @@ pub const Window = struct {
         errdefer ns_window.msgSend(void, "release", .{});
 
         // Title: a +1 NSString that NSWindow copies; we release our reference.
-        const ns_title = nsString(NSString, title);
+        const ns_title = nsString(NSString, config.title);
         defer ns_title.msgSend(void, "release", .{});
         ns_window.msgSend(void, "setTitle:", .{ns_title});
+
+        // Apply titlebar style via property calls (no-op for .default).
+        switch (config.titlebar) {
+            .default => {},
+            .transparent => {
+                ns_window.msgSend(void, "setTitlebarAppearsTransparent:", .{true});
+            },
+            .hidden => {
+                ns_window.msgSend(void, "setTitlebarAppearsTransparent:", .{true});
+                ns_window.msgSend(void, "setTitleVisibility:", .{NSWindowTitleHidden});
+            },
+        }
 
         // Center on screen, then show and make key.
         ns_window.msgSend(void, "center", .{});
@@ -302,6 +351,9 @@ test "Window exposes the documented public API surface" {
 
     const InitRet = @typeInfo(@TypeOf(Window.init)).@"fn".return_type.?;
     try std.testing.expectEqual(Error!Window, InitRet);
+    const init_params = @typeInfo(@TypeOf(Window.init)).@"fn".params;
+    try std.testing.expectEqual(@as(usize, 1), init_params.len);
+    try std.testing.expectEqual(WindowConfig, init_params[0].type.?);
 
     try std.testing.expectEqual(void, @typeInfo(@TypeOf(Window.deinit)).@"fn".return_type.?);
 
@@ -339,6 +391,8 @@ test "NSWindow instances respond to the selectors init/setTitle use" {
         "makeKeyAndOrderFront:",
         "contentView",
         "release",
+        "setTitlebarAppearsTransparent:",
+        "setTitleVisibility:",
     };
     inline for (selectors) |name| {
         const responds = NSWindow.msgSend(
@@ -435,6 +489,27 @@ test "Window.setCloseHandler signature matches spec" {
     const params = @typeInfo(@TypeOf(Window.setCloseHandler)).@"fn".params;
     // self: *Window, ctx: *anyopaque, callback: *const fn(*anyopaque) void
     try std.testing.expectEqual(@as(usize, 3), params.len);
+}
+
+test "NSWindowStyleMaskFullSizeContentView matches AppKit" {
+    try std.testing.expectEqual(@as(c_ulong, 1 << 15), NSWindowStyleMaskFullSizeContentView);
+}
+
+test "TitlebarStyle has exactly three variants" {
+    try std.testing.expectEqual(@as(usize, 3), @typeInfo(TitlebarStyle).@"enum".fields.len);
+}
+
+test "WindowConfig fields and default titlebar" {
+    try std.testing.expect(@hasField(WindowConfig, "width"));
+    try std.testing.expectEqual(CGFloat, @FieldType(WindowConfig, "width"));
+    try std.testing.expect(@hasField(WindowConfig, "height"));
+    try std.testing.expectEqual(CGFloat, @FieldType(WindowConfig, "height"));
+    try std.testing.expect(@hasField(WindowConfig, "title"));
+    try std.testing.expectEqual([:0]const u8, @FieldType(WindowConfig, "title"));
+    try std.testing.expect(@hasField(WindowConfig, "titlebar"));
+    // .titlebar defaults to .default when not specified
+    const cfg: WindowConfig = .{ .width = 100, .height = 100, .title = "x" };
+    try std.testing.expectEqual(TitlebarStyle.default, cfg.titlebar);
 }
 
 test {

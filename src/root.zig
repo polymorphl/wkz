@@ -5,7 +5,7 @@
 //!
 //! Exported namespaces:
 //!   - `app`     — NSApplication bootstrap (`App.init`, `activate`, `run`, `deinit`, `setQuitOnLastWindowClosed`, `setMenuBar`, `installDefaultMenu`)
-//!   - `window`  — NSWindow creation (`Window.init`, `setTitle`, `deinit`, `setCloseHandler`, `setPosition`, `cascadeFrom`)
+//!   - `window`  — NSWindow creation (`Window.init(WindowConfig)`, `TitlebarStyle`, `WindowConfig`, `setTitle`, `deinit`, `setCloseHandler`, `setPosition`, `cascadeFrom`)
 //!   - `webview` — WKWebView management (`WebView.init`, `attach`, `loadURL`, …)
 //!   - `bridge`  — JS↔Zig typed bridge (`Bridge.init`, `registerHandler`, …)
 //!   - `scheme`  — `app://` scheme handler (`SchemeHandler`, `AssetMap`, `mimeForPath`)
