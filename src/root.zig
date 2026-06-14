@@ -11,6 +11,7 @@
 //!   - `scheme`  — `app://` scheme handler (`SchemeHandler`, `AssetMap`, `mimeForPath`)
 //!   - `fs`      — file system bridge handlers (`Fs.init`, `registerBridgeHandlers`)
 //!   - `menu`    — NSMenuBar construction (`MenuAction`, `MenuItem`, `AppMenuConfig`, `MenuBarConfig`, `setMenuBar`, `installDefaultMenu`)
+//!   - `alert`   — NSAlert modal dialog (`registerAlertHandler`)
 
 const std = @import("std");
 
@@ -36,6 +37,9 @@ pub const fs = @import("fs.zig");
 
 // Menu module: NSMenuBar construction and menu action routing.
 pub const menu = @import("menu.zig");
+
+// Alert module: native NSAlert modal dialog via alert.show bridge handler.
+pub const alert = @import("alert.zig");
 
 test {
     std.testing.refAllDecls(@This());
