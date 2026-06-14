@@ -68,6 +68,12 @@
     <div id="status-write" class="status"></div>
   </div>
 
+  <div class="section">
+    <h2>Save Panel</h2>
+    <button id="btn-save-panel">Open Save Panel</button>
+    <div id="status-save" class="status"></div>
+  </div>
+
   <script>
     const pendingCalls = new Map();
     let nextId = 0;
@@ -148,6 +154,24 @@
       await invoke('fs.writeText', { path: '/tmp/wkz-demo.txt', content });
       status.className = 'status ok';
       status.textContent = 'Written. Verify: cat /tmp/wkz-demo.txt';
+    });
+
+    document.getElementById('btn-save-panel').addEventListener('click', async () => {
+      const status = document.getElementById('status-save');
+      status.className = 'status';
+      status.textContent = 'Opening save panel…';
+
+      const result = await invoke('fs.savePanel', { filename: 'wkz-export.txt' });
+      if (result === null) {
+        status.textContent = 'Cancelled.';
+        return;
+      }
+
+      status.textContent = 'Writing to ' + result.path + '…';
+      const content = 'Hello from wkz fs.savePanel!\nwritten at: ' + result.path + '\n';
+      await invoke('fs.writeText', { path: result.path, content });
+      status.className = 'status ok';
+      status.textContent = 'Saved to ' + result.path;
     });
   </script>
 </body>
