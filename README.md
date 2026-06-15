@@ -16,7 +16,9 @@ Think *"the [wry](https://github.com/tauri-apps/wry) layer of Tauri, for macOS, 
 
 ```sh
 zig build test                      # run all library tests (headless)
-zig build docs                      # generate API docs → zig-out/docs/index.html
+zig build docs                      # generate API docs → zig-out/docs/
+# then serve (file:// is blocked by CORS):
+python3 -m http.server -d zig-out/docs 8080  # open http://localhost:8080
 
 # run the basic example (Vite frontend)
 cd examples/basic
