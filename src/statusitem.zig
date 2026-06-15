@@ -5,12 +5,26 @@ const Bridge = @import("bridge.zig").Bridge;
 const c = objc.c;
 const log = std.log.scoped(.wkz_statusitem);
 
+/// NSStatusBar item managed through the JS bridge.
+///
+/// Ownership:
+///   - `item` is a `+1` NSStatusItem (retained from `statusItemWithLength:`),
+///     released by `deinit`.
+///   - `target` is a `+1` `WkzStatusItemTarget` instance, released by `deinit`.
+///   - `bridge` is BORROWED — must outlive this struct.
+///
+/// Call `registerBridgeHandlers` once after `init` to wire JS handlers.
+/// Must be created and used on the main thread.
 pub const StatusItem = struct {
     allocator: std.mem.Allocator,
     bridge: *Bridge,
     item: ?objc.Object = null,
     target: ?objc.Object = null,
 
+    /// Create a `StatusItem` bound to `bridge`.
+    /// No NSStatusBar item is created yet — call `registerBridgeHandlers` to
+    /// wire the JS handlers, then let JS call `statusitem.set` to show the item.
+    /// `bridge` must outlive this struct.
     pub fn init(allocator: std.mem.Allocator, bridge: *Bridge) StatusItem {
         return .{ .allocator = allocator, .bridge = bridge };
     }
