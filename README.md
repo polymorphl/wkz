@@ -103,6 +103,7 @@ Each example is a standalone Zig package using wkz as a local path dependency â€
 | [`examples/titlebar/`](examples/titlebar/) | Titlebar styles: two windows side by side demonstrating `.transparent` and `.hidden` `TitlebarStyle` variants. |
 | [`examples/menu/`](examples/menu/) | Menu API: full `NSMenuBar` with Zig callback handler, native selectors, and standard Edit/Window menus. |
 | [`examples/multi_window/`](examples/multi_window/) | Multi-window: two independent windows with close callbacks and quit-on-last-close policy. |
+| [`examples/events/`](examples/events/) | Window events: focus/blur pushed from Zig to JS via NSNotificationCenter â€” `window.focused` / `window.blurred` bridge events. |
 
 See each folder's `README.md` for full instructions.
 
