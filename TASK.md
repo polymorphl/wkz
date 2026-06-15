@@ -4,7 +4,18 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 
 ## Current focus
 
-M5 COMPLETE. All milestones DONE.
+M6 IN_PROGRESS — Foundation Extensions (dragdrop, clipboard, window events, fs.writeBinary).
+
+---
+
+## M6 — Foundation Extensions
+
+| ID | Task | Status |
+|----|------|--------|
+| 6.1 | `fs.writeBinary` bridge handler + `allowedExtensions` param in `fs.openFile`; update `examples/fs/` to demo both | DONE |
+| 6.2 | `src/dragdrop.zig` — NSDraggingDestination on NSWindow, emits `dragdrop.filesDropped` event; `examples/dragdrop/` | TODO |
+| 6.3 | `src/clipboard.zig` — `clipboard.readText` / `clipboard.writeText`; `examples/clipboard/` | TODO |
+| 6.4 | `src/events.zig` — window focus/blur via NSNotificationCenter + custom ObjC observer class; `examples/events/` | TODO |
 
 ---
 

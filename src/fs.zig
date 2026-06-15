@@ -31,6 +31,7 @@ pub const Fs = struct {
         try bridge.registerHandler("fs.readText", handleReadText);
         try bridge.registerHandler("fs.readBinary", handleReadBinary);
         try bridge.registerHandler("fs.writeText", handleWriteText);
+        try bridge.registerHandler("fs.writeBinary", handleWriteBinary);
         try bridge.registerHandler("fs.savePanel", handleSavePanel);
     }
 };
@@ -80,8 +81,24 @@ fn writeTextToPath(path: []const u8, content: []const u8) !void {
     try file.writeStreamingAll(io, content);
 }
 
+/// Decode base64-encoded data and write raw bytes to an absolute path,
+/// truncating if the file exists. Caller provides an allocator for the
+/// decode buffer, which is freed before returning.
+fn writeBinaryToPath(allocator: std.mem.Allocator, path: []const u8, data_base64: []const u8) !void {
+    const decoded_len = try std.base64.standard.Decoder.calcSizeForSlice(data_base64);
+    const buf = try allocator.alloc(u8, decoded_len);
+    defer allocator.free(buf);
+    try std.base64.standard.Decoder.decode(buf, data_base64);
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const file = try std.Io.Dir.createFileAbsolute(io, path, .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, buf);
+}
+
 /// Resolves with {"path":"/absolute/path"} when user selects a file, or "null" if cancelled.
-fn handleOpenFile(bridge: *Bridge, _: std.json.Value, id: ?i64) void {
+/// Optional param: `allowedExtensions: string[]` — if present and non-empty, restricts the
+/// panel to those file types via `setAllowedFileTypes:`. Capped at 16 extensions.
+fn handleOpenFile(bridge: *Bridge, params: std.json.Value, id: ?i64) void {
     const self: *Fs = @ptrCast(@alignCast(bridge.context.?));
 
     // NSOpenPanel is looked up from the ObjC runtime — same pattern as
@@ -91,11 +108,61 @@ fn handleOpenFile(bridge: *Bridge, _: std.json.Value, id: ?i64) void {
         if (id) |i| bridge.resolve(i, "null") catch {};
         return;
     };
+    const NSString = objc.getClass("NSString") orelse {
+        log.warn("fs.openFile: NSString class not found in ObjC runtime", .{});
+        if (id) |i| bridge.resolve(i, "null") catch {};
+        return;
+    };
+    const NSArray = objc.getClass("NSArray") orelse {
+        log.warn("fs.openFile: NSArray class not found in ObjC runtime", .{});
+        if (id) |i| bridge.resolve(i, "null") catch {};
+        return;
+    };
 
     const panel = NSOpenPanel.msgSend(objc.Object, "openPanel", .{});
     panel.msgSend(void, "setCanChooseFiles:", .{true});
     panel.msgSend(void, "setCanChooseDirectories:", .{false});
     panel.msgSend(void, "setAllowsMultipleSelection:", .{false});
+
+    // Optional allowedExtensions: string[] — cap at 16, stack-allocate NSString array.
+    const max_exts = 16;
+    const ext_array: ?[]const std.json.Value = blk: {
+        const obj = switch (params) {
+            .object => |o| o,
+            else => break :blk null,
+        };
+        const val = obj.get("allowedExtensions") orelse break :blk null;
+        break :blk switch (val) {
+            .array => |a| if (a.items.len > 0) a.items else null,
+            else => null,
+        };
+    };
+    if (ext_array) |items| {
+        const count = @min(items.len, max_exts);
+        var ns_exts: [max_exts]objc.Object = undefined;
+        var n: usize = 0;
+        for (items[0..count]) |item| {
+            const s = switch (item) {
+                .string => |sv| sv,
+                else => continue,
+            };
+            // Allocate a sentinel-terminated copy for stringWithUTF8String:.
+            const z = std.fmt.allocPrintSentinel(self.allocator, "{s}", .{s}, 0) catch continue;
+            defer self.allocator.free(z);
+            // stringWithUTF8String: returns an autoreleased NSString — no manual release.
+            ns_exts[n] = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{z.ptr});
+            n += 1;
+        }
+        if (n > 0) {
+            // NSArray arrayWithObjects:count: returns an autoreleased NSArray — no release.
+            const ns_array = NSArray.msgSend(
+                objc.Object,
+                "arrayWithObjects:count:",
+                .{ &ns_exts, @as(c_ulong, n) },
+            );
+            panel.msgSend(void, "setAllowedFileTypes:", .{ns_array});
+        }
+    }
 
     // runModal blocks the main thread until the user dismisses the panel.
     // NSModalResponseOK = 1. NSInteger = c_long on macOS (confirmed app.zig:13).
@@ -241,6 +308,53 @@ fn handleWriteText(bridge: *Bridge, params: std.json.Value, id: ?i64) void {
     if (id) |i| bridge.resolve(i, "null") catch {};
 }
 
+/// Resolves with "null" on success or error (errors are logged).
+/// Params: { path: string, data: string } where data is standard base64-encoded bytes.
+fn handleWriteBinary(bridge: *Bridge, params: std.json.Value, id: ?i64) void {
+    const self: *Fs = @ptrCast(@alignCast(bridge.context.?));
+    const obj = switch (params) {
+        .object => |o| o,
+        else => {
+            log.warn("fs.writeBinary: params must be a JSON object", .{});
+            if (id) |i| bridge.resolve(i, "null") catch {};
+            return;
+        },
+    };
+
+    const path = switch (obj.get("path") orelse {
+        log.warn("fs.writeBinary: missing path param", .{});
+        if (id) |i| bridge.resolve(i, "null") catch {};
+        return;
+    }) {
+        .string => |s| s,
+        else => {
+            log.warn("fs.writeBinary: path must be a string", .{});
+            if (id) |i| bridge.resolve(i, "null") catch {};
+            return;
+        },
+    };
+
+    const data_base64 = switch (obj.get("data") orelse {
+        log.warn("fs.writeBinary: missing data param", .{});
+        if (id) |i| bridge.resolve(i, "null") catch {};
+        return;
+    }) {
+        .string => |s| s,
+        else => {
+            log.warn("fs.writeBinary: data must be a string", .{});
+            if (id) |i| bridge.resolve(i, "null") catch {};
+            return;
+        },
+    };
+
+    writeBinaryToPath(self.allocator, path, data_base64) catch |err| {
+        log.warn("fs.writeBinary: write failed path={s} err={s}", .{ path, @errorName(err) });
+        if (id) |i| bridge.resolve(i, "null") catch {};
+        return;
+    };
+    if (id) |i| bridge.resolve(i, "null") catch {};
+}
+
 test "NSSavePanel class resolves in ObjC runtime" {
     try std.testing.expect(objc.getClass("NSSavePanel") != null);
 }
@@ -263,7 +377,7 @@ test "NSSavePanel instances respond to required selectors" {
     try std.testing.expect(NSSavePanel.msgSend(bool, "respondsToSelector:", .{objc.sel("savePanel").value}));
 }
 
-test "registerBridgeHandlers registers fs.savePanel and all 5 fs handlers" {
+test "registerBridgeHandlers registers fs.savePanel and all 6 fs handlers" {
     // Bridge.init is headless-safe: it creates the ObjC handler class via the
     // runtime (no window server needed, proven by bridge.zig's makeTestBridge
     // tests). Passing nil ucc/webview is safe: messaging nil is a no-op in ObjC,
@@ -278,15 +392,16 @@ test "registerBridgeHandlers registers fs.savePanel and all 5 fs handlers" {
     var fs = Fs.init(std.testing.allocator);
     try fs.registerBridgeHandlers(&bridge);
 
-    // All 5 handlers must be present.
+    // All 6 handlers must be present.
     // bridge.dispatch is a std.StringHashMap(Handler):
     //   count (hash_map.zig:779): pub fn count(self: Self) Size
     //   contains (hash_map.zig:1214): pub fn contains(self: Self, key: K) bool
-    try std.testing.expectEqual(@as(u32, 5), bridge.dispatch.count());
+    try std.testing.expectEqual(@as(u32, 6), bridge.dispatch.count());
     try std.testing.expect(bridge.dispatch.contains("fs.openFile"));
     try std.testing.expect(bridge.dispatch.contains("fs.readText"));
     try std.testing.expect(bridge.dispatch.contains("fs.readBinary"));
     try std.testing.expect(bridge.dispatch.contains("fs.writeText"));
+    try std.testing.expect(bridge.dispatch.contains("fs.writeBinary"));
     try std.testing.expect(bridge.dispatch.contains("fs.savePanel"));
 }
 
@@ -407,4 +522,44 @@ test "writeTextToPath creates and reads back a file" {
     const result = try readFileBytes(allocator, path);
     defer allocator.free(result);
     try std.testing.expectEqualStrings(content, result);
+}
+
+test "writeBinaryToPath round-trip with known bytes" {
+    const allocator = std.testing.allocator;
+    // Known bytes and their standard base64 encoding.
+    const original: []const u8 = &.{ 0x00, 0x01, 0xFF, 0xFE, 0x42 };
+    const encoded = try encodeBase64(allocator, original);
+    defer allocator.free(encoded);
+
+    const path = "/tmp/wkz-fs-test-write-binary.bin";
+    try writeBinaryToPath(allocator, path, encoded);
+
+    const readback = try readFileBytes(allocator, path);
+    defer allocator.free(readback);
+    try std.testing.expectEqualSlices(u8, original, readback);
+}
+
+test "writeBinaryToPath round-trip with all-zero and all-0xFF data" {
+    const allocator = std.testing.allocator;
+    var original: [64]u8 = undefined;
+    for (&original, 0..) |*b, i| b.* = if (i < 32) 0x00 else 0xFF;
+
+    const encoded = try encodeBase64(allocator, &original);
+    defer allocator.free(encoded);
+
+    const path = "/tmp/wkz-fs-test-write-binary2.bin";
+    try writeBinaryToPath(allocator, path, encoded);
+
+    const readback = try readFileBytes(allocator, path);
+    defer allocator.free(readback);
+    try std.testing.expectEqualSlices(u8, &original, readback);
+}
+
+test "NSOpenPanel instances respond to setAllowedFileTypes:" {
+    const NSOpenPanel = objc.getClass("NSOpenPanel").?;
+    try std.testing.expect(NSOpenPanel.msgSend(
+        bool,
+        "instancesRespondToSelector:",
+        .{objc.sel("setAllowedFileTypes:").value},
+    ));
 }

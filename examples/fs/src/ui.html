@@ -74,6 +74,23 @@
     <div id="status-save" class="status"></div>
   </div>
 
+  <div class="section">
+    <h2>Write Binary File</h2>
+    <p style="font-size:12px;color:#888;margin-bottom:8px;">Paste a standard base64 string below and choose a destination path.</p>
+    <textarea id="input-binary-data" rows="3" placeholder="Base64-encoded data (e.g. AAEC/w==)"
+      style="width:100%;background:#2a2a2a;border:1px solid #3a3a3a;border-radius:5px;color:#d4d4d4;font-family:monospace;font-size:12px;padding:8px;resize:vertical;margin-bottom:8px;"></textarea>
+    <input id="input-binary-path" type="text" value="/tmp/wkz-demo.bin"
+      style="width:100%;background:#2a2a2a;border:1px solid #3a3a3a;border-radius:5px;color:#d4d4d4;font-size:13px;padding:6px 8px;margin-bottom:8px;" />
+    <button id="btn-write-binary">Write Binary</button>
+    <div id="status-write-binary" class="status"></div>
+  </div>
+
+  <div class="section">
+    <h2>Open File (filtered)</h2>
+    <button id="btn-open-filtered">Open .txt or .md file</button>
+    <div id="status-open-filtered" class="status"></div>
+  </div>
+
   <script>
     const pendingCalls = new Map();
     let nextId = 0;
@@ -172,6 +189,40 @@
       await invoke('fs.writeText', { path: result.path, content });
       status.className = 'status ok';
       status.textContent = 'Saved to ' + result.path;
+    });
+
+    document.getElementById('btn-write-binary').addEventListener('click', async () => {
+      const status = document.getElementById('status-write-binary');
+      const data = document.getElementById('input-binary-data').value.trim();
+      const path = document.getElementById('input-binary-path').value.trim();
+      if (!data) {
+        status.className = 'status err';
+        status.textContent = 'No base64 data entered.';
+        return;
+      }
+      if (!path) {
+        status.className = 'status err';
+        status.textContent = 'No path entered.';
+        return;
+      }
+      status.className = 'status';
+      status.textContent = 'Writing binary to ' + path + '…';
+      await invoke('fs.writeBinary', { path, data });
+      status.className = 'status ok';
+      status.textContent = 'Written to ' + path + '. Verify: xxd ' + path;
+    });
+
+    document.getElementById('btn-open-filtered').addEventListener('click', async () => {
+      const status = document.getElementById('status-open-filtered');
+      status.className = 'status';
+      status.textContent = 'Opening file picker (txt/md only)…';
+      const result = await invoke('fs.openFile', { allowedExtensions: ['txt', 'md'] });
+      if (result === null) {
+        status.textContent = 'Cancelled.';
+        return;
+      }
+      status.className = 'status ok';
+      status.textContent = 'Selected: ' + result.path;
     });
   </script>
 </body>
