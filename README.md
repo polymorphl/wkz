@@ -16,6 +16,7 @@ Think *"the [wry](https://github.com/tauri-apps/wry) layer of Tauri, for macOS, 
 
 ```sh
 zig build test                      # run all library tests (headless)
+zig build docs                      # generate API docs → zig-out/docs/index.html
 
 # run the basic example (Vite frontend)
 cd examples/basic
