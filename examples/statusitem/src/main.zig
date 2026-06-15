@@ -17,8 +17,9 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const app = try wkz.app.App.init();
+    var app = try wkz.app.App.init();
     defer app.deinit();
+    try app.installDefaultMenu("wkz StatusItem Demo");
     const window = try wkz.window.Window.init(.{
         .width = 560,
         .height = 420,

@@ -2,6 +2,7 @@ const wkz = @import("wkz");
 
 pub fn main() !void {
     var app = try wkz.app.App.init();
+    try app.installDefaultMenu("minimal");
 
     var window = try wkz.window.Window.init(.{ .width = 800, .height = 600, .title = "minimal" });
     defer window.deinit();

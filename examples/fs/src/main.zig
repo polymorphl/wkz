@@ -17,7 +17,8 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const app = try wkz.app.App.init();
+    var app = try wkz.app.App.init();
+    try app.installDefaultMenu("wkz FS Demo");
     const window = try wkz.window.Window.init(.{ .width = 720, .height = 540, .title = "wkz FS Demo" });
     const webview = try wkz.webview.WebView.init();
     webview.attach(window);

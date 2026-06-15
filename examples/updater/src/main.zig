@@ -47,10 +47,11 @@ pub fn main() !void {
     defer allocator.free(manifest_path);
 
     // NSApplication must exist before any window is created.
-    const app = try wkz.app.App.init();
+    var app = try wkz.app.App.init();
+    try app.installDefaultMenu("wkz Updater Demo");
 
     // Centered, titled window. No deinit — see lifetime note below.
-    const window = try wkz.window.Window.init(700, 480, "wkz Updater Demo");
+    const window = try wkz.window.Window.init(.{ .width = 700, .height = 480, .title = "wkz Updater Demo" });
 
     // Plain WKWebView (no app:// scheme handler; HTML is loaded inline).
     const webview = try wkz.webview.WebView.init();
