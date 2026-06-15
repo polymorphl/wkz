@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>wkz Drag &amp; Drop</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0b0d12;
+      color: #cdd6f4;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 14px;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 24px;
+      padding: 32px;
+    }
+
+    h1 {
+      font-size: 20px;
+      font-weight: 600;
+      color: #cba6f7;
+      letter-spacing: 0.01em;
+    }
+
+    #drop-zone {
+      width: 100%;
+      max-width: 480px;
+      min-height: 160px;
+      border: 2px dashed #45475a;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 8px;
+      padding: 32px;
+      color: #6c7086;
+      transition: border-color 0.15s, color 0.15s, background 0.15s;
+    }
+
+    #drop-zone .icon { font-size: 36px; }
+    #drop-zone .hint { font-size: 13px; }
+
+    #count {
+      font-size: 13px;
+      color: #a6e3a1;
+      min-height: 18px;
+    }
+
+    #file-list {
+      width: 100%;
+      max-width: 480px;
+      max-height: 240px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    #file-list li {
+      list-style: none;
+      background: #1e1e2e;
+      border: 1px solid #313244;
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-family: "SF Mono", "Menlo", "Monaco", monospace;
+      font-size: 12px;
+      color: #89b4fa;
+      word-break: break-all;
+    }
+  </style>
+</head>
+<body>
+  <h1>Drag &amp; Drop Demo</h1>
+
+  <div id="drop-zone">
+    <span class="icon">&#128196;</span>
+    <span>Drop files here</span>
+    <span class="hint">Any file type accepted</span>
+  </div>
+
+  <p id="count"></p>
+
+  <ul id="file-list"></ul>
+
+  <script>
+    // Install the global event receiver that wkz will call when files are
+    // dropped. wkz evaluates: __wkz_event({"type":"dragdrop.filesDropped",
+    // "payload":{"paths":[...]}}) in the WebView.
+    globalThis.__wkz_event = function(event) {
+      if (event.type !== 'dragdrop.filesDropped') return;
+      var paths = (event.payload && event.payload.paths) ? event.payload.paths : [];
+
+      var list = document.getElementById('files');
+      var fileList = document.getElementById('file-list');
+      var count = document.getElementById('count');
+
+      fileList.innerHTML = '';
+      paths.forEach(function(p) {
+        var li = document.createElement('li');
+        li.textContent = p;
+        fileList.appendChild(li);
+      });
+
+      count.textContent = paths.length === 0
+        ? ''
+        : paths.length + ' file' + (paths.length === 1 ? '' : 's') + ' dropped';
+    };
+  </script>
+</body>
+</html>

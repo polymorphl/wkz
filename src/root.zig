@@ -45,6 +45,9 @@ pub const alert = @import("alert.zig");
 // StatusItem module: NSStatusBar item bridge handlers (set, remove).
 pub const statusitem = @import("statusitem.zig");
 
+// DragDrop module: transparent file drag-and-drop overlay.
+pub const dragdrop = @import("dragdrop.zig");
+
 test {
     std.testing.refAllDecls(@This());
     _ = objc_helpers;
