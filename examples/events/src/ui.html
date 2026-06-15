@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>wkz Window Events</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #0b0d12;
+      color: #cdd6f4;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 14px;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 28px;
+      padding: 32px;
+    }
+
+    h1 {
+      font-size: 18px;
+      font-weight: 600;
+      color: #cba6f7;
+      letter-spacing: 0.01em;
+    }
+
+    #badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 200px;
+      height: 200px;
+      border-radius: 50%;
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      transition: background 0.25s, color 0.25s, box-shadow 0.25s;
+      background: #1e1e2e;
+      color: #45475a;
+      box-shadow: 0 0 0 0 transparent;
+    }
+
+    #badge.focused {
+      background: #1e3a2e;
+      color: #a6e3a1;
+      box-shadow: 0 0 32px 4px rgba(166, 227, 161, 0.25);
+    }
+
+    #badge.blurred {
+      background: #2a1e1e;
+      color: #f38ba8;
+      box-shadow: 0 0 32px 4px rgba(243, 139, 168, 0.10);
+    }
+
+    #hint {
+      font-size: 12px;
+      color: #6c7086;
+    }
+
+    #log-wrap {
+      width: 100%;
+      max-width: 480px;
+    }
+
+    #log-title {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #585b70;
+      margin-bottom: 8px;
+    }
+
+    #event-log {
+      width: 100%;
+      max-height: 120px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    #event-log .entry {
+      display: flex;
+      gap: 10px;
+      background: #1e1e2e;
+      border: 1px solid #313244;
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 12px;
+      font-family: "SF Mono", "Menlo", "Monaco", monospace;
+    }
+
+    #event-log .entry .ts {
+      color: #585b70;
+      flex-shrink: 0;
+    }
+
+    #event-log .entry .type-focused { color: #a6e3a1; }
+    #event-log .entry .type-blurred { color: #f38ba8; }
+  </style>
+</head>
+<body>
+  <h1>Window Events</h1>
+
+  <div id="badge">IDLE</div>
+
+  <p id="hint">Click another app to blur &bull; click back to focus</p>
+
+  <div id="log-wrap">
+    <p id="log-title">Event log</p>
+    <div id="event-log"></div>
+  </div>
+
+  <script>
+    var badge = document.getElementById('badge');
+    var eventLog = document.getElementById('event-log');
+    var MAX_LOG = 20;
+
+    function formatTime(ms) {
+      var d = new Date(ms);
+      var hh = String(d.getHours()).padStart(2, '0');
+      var mm = String(d.getMinutes()).padStart(2, '0');
+      var ss = String(d.getSeconds()).padStart(2, '0');
+      var ms3 = String(d.getMilliseconds()).padStart(3, '0');
+      return hh + ':' + mm + ':' + ss + '.' + ms3;
+    }
+
+    function appendLog(type) {
+      var entry = document.createElement('div');
+      entry.className = 'entry';
+
+      var ts = document.createElement('span');
+      ts.className = 'ts';
+      ts.textContent = formatTime(Date.now());
+
+      var label = document.createElement('span');
+      label.className = type === 'window.focused' ? 'type-focused' : 'type-blurred';
+      label.textContent = type;
+
+      entry.appendChild(ts);
+      entry.appendChild(label);
+
+      // Prepend so newest is at top.
+      if (eventLog.firstChild) {
+        eventLog.insertBefore(entry, eventLog.firstChild);
+      } else {
+        eventLog.appendChild(entry);
+      }
+
+      // Trim old entries.
+      while (eventLog.children.length > MAX_LOG) {
+        eventLog.removeChild(eventLog.lastChild);
+      }
+    }
+
+    // Install the global event receiver that wkz evaluates via bridge.evaluate.
+    // wkz calls: __wkz_event({"type":"window.focused"}) or
+    //            __wkz_event({"type":"window.blurred"})
+    globalThis.__wkz_event = function(event) {
+      if (event.type === 'window.focused') {
+        badge.className = 'focused';
+        badge.textContent = 'FOCUSED';
+        appendLog('window.focused');
+      } else if (event.type === 'window.blurred') {
+        badge.className = 'blurred';
+        badge.textContent = 'BLURRED';
+        appendLog('window.blurred');
+      }
+    };
+  </script>
+</body>
+</html>

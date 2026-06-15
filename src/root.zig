@@ -52,6 +52,9 @@ pub const dragdrop = @import("dragdrop.zig");
 // Clipboard module: read/write the system clipboard via NSPasteboard.
 pub const clipboard = @import("clipboard.zig");
 
+// Events module: window focus/blur via NSNotificationCenter observer.
+pub const events = @import("events.zig");
+
 test {
     std.testing.refAllDecls(@This());
     _ = objc_helpers;

@@ -1,0 +1,16 @@
+.{
+    .name = .events_example,
+    .version = "0.0.0",
+    .fingerprint = 0x388de285c5fd3dae,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .wkz = .{
+            .path = "../..",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
