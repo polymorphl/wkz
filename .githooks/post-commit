@@ -1,0 +1,4 @@
+#!/bin/sh
+# Regenerate API docs after every commit.
+# Output lands in zig-out/docs/ (gitignored).
+zig build docs

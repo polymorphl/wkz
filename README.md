@@ -26,6 +26,14 @@ zig build run -Ddev=true            # dev: loads http://localhost:5173
 cd frontend && npm run dev           # start the Vite dev server
 ```
 
+## Contributing
+
+Enable the git hooks (one-time setup) — they regenerate the API docs after each commit:
+
+```sh
+git config core.hooksPath .githooks
+```
+
 In examples that embed a frontend, dev vs prod is the **`-Ddev` build option**, not a runtime switch:
 
 - `-Ddev=true` — the WKWebView loads `http://localhost:5173`.
