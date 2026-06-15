@@ -14,7 +14,7 @@ M6 IN_PROGRESS — Foundation Extensions (dragdrop, clipboard, window events, fs
 |----|------|--------|
 | 6.1 | `fs.writeBinary` bridge handler + `allowedExtensions` param in `fs.openFile`; update `examples/fs/` to demo both | DONE |
 | 6.2 | `src/dragdrop.zig` — NSDraggingDestination on NSWindow, emits `dragdrop.filesDropped` event; `examples/dragdrop/` | DONE |
-| 6.3 | `src/clipboard.zig` — `clipboard.readText` / `clipboard.writeText`; `examples/clipboard/` | TODO |
+| 6.3 | `src/clipboard.zig` — `clipboard.readText` / `clipboard.writeText`; `examples/clipboard/` | DONE |
 | 6.4 | `src/events.zig` — window focus/blur via NSNotificationCenter + custom ObjC observer class; `examples/events/` | TODO |
 
 ---

@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>wkz Clipboard Demo</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+      font-size: 14px;
+      background: #1e1e1e;
+      color: #d4d4d4;
+      padding: 32px;
+    }
+    h1 { font-size: 20px; font-weight: 600; color: #fff; margin-bottom: 24px; }
+    h2 { font-size: 14px; font-weight: 600; color: #aaa; margin-bottom: 10px; }
+    .section { margin-bottom: 28px; padding-bottom: 28px; border-bottom: 1px solid #2e2e2e; }
+    .section:last-child { border-bottom: none; }
+    button {
+      padding: 7px 16px;
+      border: none;
+      border-radius: 5px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      background: #0066cc;
+      color: #fff;
+      margin-right: 8px;
+    }
+    button:hover { background: #0077e6; }
+    .status { font-size: 12px; color: #888; margin: 8px 0; min-height: 18px; }
+    .status.ok  { color: #4ec9b0; }
+    .status.err { color: #f44747; }
+    textarea, input[type="text"] {
+      width: 100%;
+      background: #2a2a2a;
+      border: 1px solid #3a3a3a;
+      border-radius: 5px;
+      color: #d4d4d4;
+      font-size: 13px;
+      padding: 8px;
+      font-family: inherit;
+      resize: vertical;
+      margin-bottom: 8px;
+    }
+    .result-box {
+      background: #2a2a2a;
+      border: 1px solid #3a3a3a;
+      border-radius: 6px;
+      padding: 12px;
+      font-size: 12px;
+      line-height: 1.5;
+      min-height: 36px;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+  </style>
+</head>
+<body>
+  <h1>wkz Clipboard Demo</h1>
+
+  <div class="section">
+    <h2>Read Clipboard</h2>
+    <button id="btn-read">Read from Clipboard</button>
+    <div id="status-read" class="status"></div>
+    <div id="output-read" class="result-box"></div>
+  </div>
+
+  <div class="section">
+    <h2>Write to Clipboard</h2>
+    <textarea id="input-write" rows="3" placeholder="Enter text to copy to clipboard…"></textarea>
+    <button id="btn-write">Copy to Clipboard</button>
+    <div id="status-write" class="status"></div>
+  </div>
+
+  <script>
+    const pendingCalls = new Map();
+    let nextId = 0;
+
+    window.__resolve = function __resolve(id, result) {
+      const pending = pendingCalls.get(id);
+      if (pending === undefined) {
+        console.warn('wkz: __resolve received unknown id=' + id);
+        return;
+      }
+      pendingCalls.delete(id);
+      pending(result);
+    };
+
+    function invoke(method, params) {
+      const bridge = window.webkit?.messageHandlers?.bridge;
+      if (!bridge) return Promise.reject(new Error('not inside a WKWebView'));
+      const id = nextId;
+      nextId = nextId < Number.MAX_SAFE_INTEGER ? nextId + 1 : 0;
+      return new Promise((resolve) => {
+        pendingCalls.set(id, resolve);
+        bridge.postMessage(JSON.stringify({ method, params: params || {}, id }));
+      });
+    }
+
+    document.getElementById('btn-read').addEventListener('click', async () => {
+      const status = document.getElementById('status-read');
+      const output = document.getElementById('output-read');
+      status.className = 'status';
+      status.textContent = 'Reading clipboard…';
+      output.textContent = '';
+
+      const result = await invoke('clipboard.readText', {});
+      if (result === null) {
+        status.className = 'status';
+        status.textContent = 'Clipboard is empty (no text).';
+        output.textContent = '(empty)';
+        return;
+      }
+      status.className = 'status ok';
+      status.textContent = result.text.length + ' characters read.';
+      output.textContent = result.text;
+    });
+
+    document.getElementById('btn-write').addEventListener('click', async () => {
+      const status = document.getElementById('status-write');
+      const text = document.getElementById('input-write').value;
+      if (!text) {
+        status.className = 'status err';
+        status.textContent = 'Nothing to copy — enter text above.';
+        return;
+      }
+      status.className = 'status';
+      status.textContent = 'Writing to clipboard…';
+
+      await invoke('clipboard.writeText', { text });
+      status.className = 'status ok';
+      status.textContent = 'Copied ' + text.length + ' characters to clipboard.';
+    });
+  </script>
+</body>
+</html>

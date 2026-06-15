@@ -1,0 +1,16 @@
+.{
+    .name = .clipboard_example,
+    .version = "0.0.0",
+    .fingerprint = 0x8056b7a310b96d25,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .wkz = .{
+            .path = "../..",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

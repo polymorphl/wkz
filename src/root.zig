@@ -13,6 +13,7 @@
 //!   - `menu`    — NSMenuBar construction (`MenuAction`, `MenuItem`, `AppMenuConfig`, `MenuBarConfig`, `setMenuBar`, `installDefaultMenu`)
 //!   - `alert`   — NSAlert modal dialog (`registerAlertHandler`)
 //!   - `statusitem` — NSStatusItem menu-bar status item (`StatusItem.init`, `registerBridgeHandlers`, `deinit`)
+//!   - `clipboard`  — NSPasteboard clipboard access (`registerClipboardHandlers`)
 
 const std = @import("std");
 
@@ -47,6 +48,9 @@ pub const statusitem = @import("statusitem.zig");
 
 // DragDrop module: transparent file drag-and-drop overlay.
 pub const dragdrop = @import("dragdrop.zig");
+
+// Clipboard module: read/write the system clipboard via NSPasteboard.
+pub const clipboard = @import("clipboard.zig");
 
 test {
     std.testing.refAllDecls(@This());
