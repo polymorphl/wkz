@@ -95,7 +95,9 @@ Each example is a standalone Zig package using wkz as a local path dependency �
 | [`examples/basic/`](examples/basic/) | Full-stack example: bridge, `app://` scheme handler, embedded Vite frontend, `.app` bundle. Supports `-Ddev=true` for hot-reload. |
 | [`examples/minimal/`](examples/minimal/) | Smallest possible app: window + WKWebView + inline HTML. No bridge, no assets. |
 | [`examples/updater/`](examples/updater/) | Auto-updater wired through the JS↔Zig bridge: check / download / install flow with a sample manifest. |
-| [`examples/fs/`](examples/fs/) | File system bridge: native open dialog (NSOpenPanel), read text/binary, write text. |
+| [`examples/fs/`](examples/fs/) | File system bridge: native open dialog (NSOpenPanel), read text/binary, write text/binary, file-type filtering. |
+| [`examples/clipboard/`](examples/clipboard/) | Clipboard bridge: read and write plain text via `clipboard.readText` / `clipboard.writeText` (NSPasteboard). |
+| [`examples/dragdrop/`](examples/dragdrop/) | Drag & drop: drop files from Finder onto the window — paths emitted as `dragdrop.filesDropped` bridge event. |
 | [`examples/alert/`](examples/alert/) | Alert dialogs: native NSAlert via `alert.show` bridge handler — simple, confirmation (critical), and informational scenarios. |
 | [`examples/statusitem/`](examples/statusitem/) | Menu-bar status item: NSStatusItem with title, SF Symbol icon, and `statusitem.click` events via `wkz.statusitem`. |
 | [`examples/titlebar/`](examples/titlebar/) | Titlebar styles: two windows side by side demonstrating `.transparent` and `.hidden` `TitlebarStyle` variants. |
