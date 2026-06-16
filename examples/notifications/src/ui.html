@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>wkz Notifications Demo</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+      font-size: 14px;
+      background: #1e1e1e;
+      color: #d4d4d4;
+      padding: 32px;
+    }
+    h1 { font-size: 20px; font-weight: 600; color: #fff; margin-bottom: 24px; }
+    h2 { font-size: 14px; font-weight: 600; color: #aaa; margin-bottom: 10px; }
+    .section { margin-bottom: 28px; padding-bottom: 28px; border-bottom: 1px solid #2e2e2e; }
+    .section:last-child { border-bottom: none; }
+    button {
+      padding: 7px 16px;
+      border: none;
+      border-radius: 5px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      background: #0066cc;
+      color: #fff;
+      margin-right: 8px;
+    }
+    button:hover { background: #0077e6; }
+    .status { font-size: 12px; color: #888; margin: 8px 0; min-height: 18px; }
+    .status.ok  { color: #4ec9b0; }
+    .status.err { color: #f44747; }
+    label { display: block; font-size: 12px; color: #888; margin-bottom: 4px; }
+    input[type="text"] {
+      width: 100%;
+      background: #2a2a2a;
+      border: 1px solid #3a3a3a;
+      border-radius: 5px;
+      color: #d4d4d4;
+      font-size: 13px;
+      padding: 8px;
+      font-family: inherit;
+      margin-bottom: 10px;
+    }
+  </style>
+</head>
+<body>
+  <h1>wkz Notifications Demo</h1>
+
+  <div class="section">
+    <h2>Request Permission</h2>
+    <p style="font-size:12px;color:#888;margin-bottom:10px;">
+      Ask the OS to allow alert, sound, and badge notifications. macOS shows its
+      own permission dialog the first time this is called.
+    </p>
+    <button id="btn-request">Request Permission</button>
+    <div id="status-request" class="status"></div>
+  </div>
+
+  <div class="section">
+    <h2>Send Notification</h2>
+    <label for="notif-title">Title</label>
+    <input type="text" id="notif-title" value="Hello from wkz" placeholder="Notification title" />
+    <label for="notif-body">Body</label>
+    <input type="text" id="notif-body" value="This is a local notification." placeholder="Notification body" />
+    <label for="notif-id">Identifier (optional — leave blank to auto-generate)</label>
+    <input type="text" id="notif-id" value="" placeholder="my-notification-id" />
+    <button id="btn-send">Send Notification</button>
+    <div id="status-send" class="status"></div>
+  </div>
+
+  <script>
+    const pendingCalls = new Map();
+    let nextId = 0;
+
+    window.__resolve = function __resolve(id, result) {
+      const pending = pendingCalls.get(id);
+      if (pending === undefined) {
+        console.warn('wkz: __resolve received unknown id=' + id);
+        return;
+      }
+      pendingCalls.delete(id);
+      pending(result);
+    };
+
+    function invoke(method, params) {
+      const bridge = window.webkit?.messageHandlers?.bridge;
+      if (!bridge) return Promise.reject(new Error('not inside a WKWebView'));
+      const id = nextId;
+      nextId = nextId < Number.MAX_SAFE_INTEGER ? nextId + 1 : 0;
+      return new Promise((resolve) => {
+        pendingCalls.set(id, resolve);
+        bridge.postMessage(JSON.stringify({ method, params, id }));
+      });
+    }
+
+    document.getElementById('btn-request').addEventListener('click', async () => {
+      const status = document.getElementById('status-request');
+      status.className = 'status';
+      status.textContent = 'Requesting…';
+      try {
+        const result = await invoke('notifications.requestPermission', null);
+        if (result === true) {
+          status.className = 'status ok';
+          status.textContent = 'Permission request sent. Check System Settings if needed.';
+        } else {
+          status.className = 'status err';
+          status.textContent = 'Permission request failed.';
+        }
+      } catch (e) {
+        status.className = 'status err';
+        status.textContent = 'Error: ' + e.message;
+      }
+    });
+
+    document.getElementById('btn-send').addEventListener('click', async () => {
+      const status = document.getElementById('status-send');
+      const title = document.getElementById('notif-title').value.trim();
+      const body = document.getElementById('notif-body').value.trim();
+      const notifId = document.getElementById('notif-id').value.trim();
+
+      if (!title) {
+        status.className = 'status err';
+        status.textContent = 'Title is required.';
+        return;
+      }
+      if (!body) {
+        status.className = 'status err';
+        status.textContent = 'Body is required.';
+        return;
+      }
+
+      const params = { title, body };
+      if (notifId) params.id = notifId;
+
+      status.className = 'status';
+      status.textContent = 'Sending…';
+      try {
+        const result = await invoke('notifications.send', params);
+        if (result === true) {
+          status.className = 'status ok';
+          status.textContent = 'Notification sent!';
+        } else {
+          status.className = 'status err';
+          status.textContent = 'Failed to send notification.';
+        }
+      } catch (e) {
+        status.className = 'status err';
+        status.textContent = 'Error: ' + e.message;
+      }
+    });
+  </script>
+</body>
+</html>

@@ -14,7 +14,8 @@
 //!   - `alert`   — NSAlert modal dialog (`registerAlertHandler`)
 //!   - `statusitem` — NSStatusItem menu-bar status item (`StatusItem.init`, `registerBridgeHandlers`, `deinit`)
 //!   - `clipboard`  — NSPasteboard clipboard access (`registerClipboardHandlers`)
-//!   - `shell`      — NSWorkspace shell integration (`registerHandlers`)
+//!   - `shell`         — NSWorkspace shell integration (`registerHandlers`)
+//!   - `notifications` — UNUserNotificationCenter local notifications (`registerHandlers`)
 
 const std = @import("std");
 
@@ -77,6 +78,11 @@ pub const events = @import("events.zig");
 /// Shell integration: `registerHandlers`. Handles `shell.open` from JS,
 /// opening URLs via `NSWorkspace openURL:`.
 pub const shell = @import("shell.zig");
+
+/// Local notification support: `registerHandlers`. Handles
+/// `notifications.requestPermission` and `notifications.send` from JS via
+/// `UNUserNotificationCenter`.
+pub const notifications = @import("notifications.zig");
 
 test {
     std.testing.refAllDecls(@This());

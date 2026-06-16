@@ -127,6 +127,7 @@ Each example is a standalone Zig package using wkz as a local path dependency â€
 | [`examples/multi_window/`](examples/multi_window/) | Multi-window: two independent windows with close callbacks and quit-on-last-close policy. |
 | [`examples/events/`](examples/events/) | Window events: focus/blur pushed from Zig to JS via NSNotificationCenter â€” `window.focused` / `window.blurred` bridge events. |
 | [`examples/shell/`](examples/shell/) | Shell integration: open URLs in the default browser or registered scheme handler via `shell.open` (NSWorkspace). |
+| [`examples/notifications/`](examples/notifications/) | Local notifications: request permission and deliver banners via `notifications.requestPermission` / `notifications.send` (UNUserNotificationCenter). |
 
 See each folder's `README.md` for full instructions.
 

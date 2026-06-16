@@ -34,6 +34,7 @@ pub fn build(b: *std.Build) void {
     wkz.linkFramework("AppKit", .{});
     wkz.linkFramework("WebKit", .{});
     wkz.linkFramework("Foundation", .{});
+    wkz.linkFramework("UserNotifications", .{});
     wkz.linkSystemLibrary("objc", .{});
 
     // Tests for tools/gen_assets.zig (pure-Zig, no ObjC, host target).

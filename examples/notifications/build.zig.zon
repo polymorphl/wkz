@@ -1,0 +1,16 @@
+.{
+    .name = .notifications_example,
+    .version = "0.0.0",
+    .fingerprint = 0x2b7133f06708b7b9,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .wkz = .{
+            .path = "../..",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
