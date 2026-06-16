@@ -427,6 +427,37 @@ pub const Bridge = struct {
         );
     }
 
+    /// Push an event from Zig to JS without a pending JS call. Evaluates
+    /// `__wkz_event({type: "<event_type>", payload: <payload>})` in the webview.
+    ///
+    /// `event_type` is the event name (e.g. `"notifications.clicked"`).
+    /// `payload` must be a valid JSON value string (e.g. `"{\"id\":\"x\"}"`) or
+    /// `undefined` (empty/null). It is injected verbatim as the `payload` field
+    /// of the event object passed to `__wkz_event`. The callee owns the payload
+    /// string lifecycle — this function only reads it during the call.
+    ///
+    /// Memory: allocates a `[:0]u8` JS expression from `self.allocator`, calls
+    /// `evaluate`, then frees. No allocation survives this call. Must be called
+    /// on the main thread (WebKit requirement).
+    ///
+    /// Returns `Allocator.Error` only if the JS string cannot be allocated.
+    ///
+    /// Verified: `std.fmt.allocPrintSentinel` (fmt.zig:639):
+    ///   `pub fn allocPrintSentinel(gpa, comptime fmt, args, comptime sentinel) Allocator.Error![:sentinel]u8`
+    pub fn emit(self: *Bridge, event_type: []const u8, payload: []const u8) std.mem.Allocator.Error!void {
+        // Build: __wkz_event({type:"<event_type>",payload:<payload>})
+        // payload is a JSON value injected verbatim — caller is responsible for
+        // correct JSON encoding (same raw-expression contract as `resolve`).
+        const js = try std.fmt.allocPrintSentinel(
+            self.allocator,
+            "__wkz_event({{\"type\":\"{s}\",\"payload\":{s}}})",
+            .{ event_type, payload },
+            0,
+        );
+        defer self.allocator.free(js);
+        self.evaluate(js);
+    }
+
     /// Deliver a reply to the JS caller identified by `id`. Builds the string
     /// `__resolve(<id>, <result>)` and calls `evaluate` with it. This is the
     /// Zig→JS reply path: when JS sends `{ method, params, id }`, Zig calls
@@ -1636,6 +1667,20 @@ test "Bridge exposes buildResolveJS as a public decl with the correct signature"
     try std.testing.expectEqual(std.mem.Allocator.Error![:0]u8, Ret);
 }
 
+test "emit: allocates the __wkz_event call, calls evaluate, and frees (nil webview guard)" {
+    // Foundation is always loaded in the test runtime, so `evaluate` takes the
+    // full path: it allocates a +1 NSString for the JS expression, then calls
+    // `msgSend(evaluateJavaScript:completionHandler:)` on the nil webview field.
+    // ObjC nil-messaging is safe and silently no-ops, so no crash occurs. The
+    // NSString is released via `defer` before `evaluate` returns. `emit` itself
+    // allocates the sentinel JS string, calls `evaluate`, and frees the string.
+    // Under `std.testing.allocator` any leak fails the test, proving the full
+    // alloc+release cycle completes cleanly against a nil webview.
+    var bridge = try makeTestBridge(); // webview is nil
+    defer bridge.deinit();
+    try bridge.emit("notifications.clicked", "{\"id\":\"wkz-notif-0\"}");
+}
+
 test "resolve allocates, calls evaluate with correct JS, and frees (nil webview guard)" {
     // `evaluate` guards `objc.getClass("NSString") orelse return` — so with a
     // nil webview field it returns immediately without crashing. `resolve` still
@@ -1933,6 +1978,10 @@ test "Bridge exposes the documented public API surface" {
     try std.testing.expectEqual(
         std.mem.Allocator.Error!void,
         @typeInfo(@TypeOf(Bridge.resolve)).@"fn".return_type.?,
+    );
+    try std.testing.expectEqual(
+        std.mem.Allocator.Error!void,
+        @typeInfo(@TypeOf(Bridge.emit)).@"fn".return_type.?,
     );
     try std.testing.expectEqual(void, @typeInfo(@TypeOf(Bridge.handleMessage)).@"fn".return_type.?);
     try std.testing.expectEqual(void, @typeInfo(@TypeOf(Bridge.deinit)).@"fn".return_type.?);

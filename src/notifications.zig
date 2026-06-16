@@ -41,6 +41,29 @@ var delegate_instance: objc.Object = .{ .value = null };
 /// correct and is NOT a leak.
 const delegate_class_name: [:0]const u8 = "WkzUNDelegate";
 
+/// Name of the `id`-typed instance variable on the delegate class that stores
+/// the borrowed `*Bridge` context pointer. Same no-ARC semantics as the
+/// `wkz_ctx` ivar on `WkzScriptMessageHandler` — a raw pointer store, no
+/// retain/release, no object semantics.
+const bridge_ivar_name: [:0]const u8 = "wkz_bridge";
+
+/// ObjC runtime functions not exposed by zig-objc.
+extern fn objc_getProtocol(name: [*:0]const u8) ?*anyopaque;
+extern fn class_addProtocol(cls: objc.c.Class, proto: *anyopaque) bool;
+
+// Comptime assertion: pins the Darwin block ABI layout assumed by the IMP
+// functions below. If the offset ever changes (it hasn't since 2008), this
+// catches it at compile time.
+const BlockHeader = extern struct {
+    isa: *anyopaque,
+    flags: i32,
+    reserved: i32,
+    invoke: *anyopaque,
+};
+comptime {
+    std.debug.assert(@offsetOf(BlockHeader, "invoke") == 16);
+}
+
 /// IMP for `-[WkzUNDelegate userNotificationCenter:willPresentNotification:withCompletionHandler:]`.
 ///
 /// Called by the system when a notification would be delivered while the app is
@@ -66,22 +89,6 @@ const delegate_class_name: [:0]const u8 = "WkzUNDelegate";
 ///   UNNotificationPresentationOptionBanner = 4
 ///   UNNotificationPresentationOptionList   = 8
 ///   Combined = 14
-/// ObjC runtime functions not exposed by zig-objc.
-extern fn objc_getProtocol(name: [*:0]const u8) ?*anyopaque;
-extern fn class_addProtocol(cls: objc.c.Class, proto: *anyopaque) bool;
-
-// Comptime assertion: pins the Darwin block ABI layout assumed by impWillPresentNotification.
-// If the offset ever changes (it hasn't since 2008), this catches it at compile time.
-const BlockHeader = extern struct {
-    isa: *anyopaque,
-    flags: i32,
-    reserved: i32,
-    invoke: *anyopaque,
-};
-comptime {
-    std.debug.assert(@offsetOf(BlockHeader, "invoke") == 16);
-}
-
 fn impWillPresentNotification(
     _self: c.id,
     _sel: c.SEL,
@@ -104,23 +111,138 @@ fn impWillPresentNotification(
     invoke_ptr.*(handler.?, 4 | 8 | 2);
 }
 
+/// IMP for `-[WkzUNDelegate userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:]`.
+///
+/// Called by the system when the user clicks a notification banner (both while
+/// the app is in the foreground and when the click brings the app to the
+/// foreground from the background / not-running state).
+///
+/// This IMP:
+///   1. Recovers the borrowed `*Bridge` from the `wkz_bridge` ivar.
+///   2. Extracts the notification identifier from the response object.
+///   3. Builds a JSON payload `{"id":"<identifier>"}` and calls `bridge.emit`.
+///   4. Calls the completion-handler block (no-arg invoke at offset 16).
+///
+/// ARC: `*Bridge` is stored raw (no retain) — same semantics as `wkz_ctx` on
+/// `WkzScriptMessageHandler`. The bridge pointer is valid for the process
+/// lifetime (see `setupDelegate` ownership note). The allocator-allocated JSON
+/// payload slice is freed before return. All ObjC objects here are borrowed
+/// from the system call stack (not retained, not released by us).
+///
+/// No ObjC blocks created — we only call the block passed to us.
+///
+/// The completion handler for `didReceiveNotificationResponse:` takes no
+/// arguments: its invoke signature is `fn(*anyopaque) callconv(.c) void`.
+fn impDidReceiveNotificationResponse(
+    _self: c.id,
+    _sel: c.SEL,
+    _center: c.id,
+    response: c.id,
+    handler: c.id,
+) callconv(.c) void {
+    _ = _sel;
+    _ = _center;
+
+    // Recover the borrowed *Bridge from the delegate's wkz_bridge ivar.
+    // object_getIvar is a raw pointer read (no retain) under MRC.
+    const delegate = objc.Object{ .value = _self };
+    const ctx = delegate.getInstanceVariable(bridge_ivar_name);
+    if (ctx.value == null) {
+        log.warn("notifications: didReceiveNotificationResponse: no bridge context (wkz_bridge ivar nil)", .{});
+        // Still call the completion handler even without a bridge context.
+        if (handler != null) {
+            const InvokeFn = *const fn (*anyopaque) callconv(.c) void;
+            const invoke_ptr: *const InvokeFn = @ptrFromInt(@intFromPtr(handler.?) + 16);
+            invoke_ptr.*(handler.?);
+        }
+        return;
+    }
+    const bridge: *Bridge = @ptrCast(@alignCast(ctx.value));
+
+    // Extract the notification identifier:
+    //   response → notification → request → identifier (NSString) → UTF8String
+    // All objects here are borrowed from the system's call stack — not owned,
+    // not retained, not released.
+    const resp_obj = objc.Object{ .value = response };
+    const notification = resp_obj.msgSend(objc.Object, "notification", .{});
+    const request = notification.msgSend(objc.Object, "request", .{});
+    const identifier_ns = request.msgSend(objc.Object, "identifier", .{});
+    const identifier_cstr = identifier_ns.msgSend(?[*:0]const u8, "UTF8String", .{});
+    const identifier: []const u8 = if (identifier_cstr) |s| std.mem.span(s) else "";
+
+    // Build JSON payload: {"id":"<identifier>"}
+    // The identifier is auto-generated as "wkz-notif-N" or supplied by the
+    // caller — we assume it contains no `"` or `\` (no JSON escaping needed
+    // for the common case; callers using custom ids are responsible for safe
+    // values).
+    const payload = std.fmt.allocPrint(
+        bridge.allocator,
+        "{{\"id\":\"{s}\"}}",
+        .{identifier},
+    ) catch {
+        log.warn("notifications: didReceiveNotificationResponse: OOM building payload", .{});
+        if (handler != null) {
+            const InvokeFn = *const fn (*anyopaque) callconv(.c) void;
+            const invoke_ptr: *const InvokeFn = @ptrFromInt(@intFromPtr(handler.?) + 16);
+            invoke_ptr.*(handler.?);
+        }
+        return;
+    };
+    defer bridge.allocator.free(payload);
+
+    // Push the event to JS via the __wkz_event global installed by events.ts.
+    bridge.emit("notifications.clicked", payload) catch |err| {
+        log.warn("notifications: didReceiveNotificationResponse: emit failed: {}", .{err});
+    };
+
+    // Call the no-arg completion handler block (invoke at offset 16).
+    if (handler != null) {
+        const InvokeFn = *const fn (*anyopaque) callconv(.c) void;
+        const invoke_ptr: *const InvokeFn = @ptrFromInt(@intFromPtr(handler.?) + 16);
+        invoke_ptr.*(handler.?);
+    }
+}
+
 /// Create (or look up) the `WkzUNDelegate` class.
+///
+/// Open-coded (same pattern as `WkzScriptMessageHandler` in bridge.zig): we
+/// cannot use `objc_helpers.defineClass` because `addIvar` must happen between
+/// `allocateClassPair` and `registerClassPair`, and `defineClass` is a black
+/// box that registers immediately after adding methods. Open-coding gives us
+/// the window to insert the ivar.
 ///
 /// Idempotent: if already registered (e.g. second call in the same process),
 /// returns the existing class. Process-lived — nothing to release.
 fn delegateClass() objc_helpers.Error!objc.Class {
+    // Idempotent guard: return existing class if already registered.
+    if (objc.getClass(delegate_class_name)) |existing| return existing;
+
     const NSObject = objc.getClass("NSObject") orelse
         return objc_helpers.Error.ClassRegistrationFailed;
-    const cls = try objc_helpers.defineClass(
-        delegate_class_name,
-        NSObject,
-        .{
-            objc_helpers.method(
-                "userNotificationCenter:willPresentNotification:withCompletionHandler:",
-                impWillPresentNotification,
-            ),
-        },
-    );
+
+    // objc_allocateClassPair fails (nil) on a duplicate name; guarded above, so
+    // nil here is a genuine allocation failure.
+    const cls = objc.allocateClassPair(NSObject, delegate_class_name) orelse
+        return objc_helpers.Error.ClassRegistrationFailed;
+
+    // Add the `wkz_bridge` ivar BEFORE registerClassPair — this is the only
+    // window in which class_addIvar is legal. Stores a borrowed *Bridge pointer.
+    std.debug.assert(cls.addIvar(bridge_ivar_name));
+
+    // Register both delegate methods. addMethod asserts the IMP convention and
+    // derives the encoding from the fn type. false only if the selector already
+    // exists on a fresh pair — a programming error, so assert.
+    std.debug.assert(cls.addMethod(
+        "userNotificationCenter:willPresentNotification:withCompletionHandler:",
+        impWillPresentNotification,
+    ));
+    std.debug.assert(cls.addMethod(
+        "userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:",
+        impDidReceiveNotificationResponse,
+    ));
+
+    objc.registerClassPair(cls);
+
     // Declare protocol conformance so UNUserNotificationCenter recognises the
     // delegate. class_addProtocol is idempotent on an already-registered class.
     if (objc_getProtocol("UNUserNotificationCenterDelegate")) |proto| {
@@ -132,6 +254,7 @@ fn delegateClass() objc_helpers.Error!objc.Class {
 /// Set up the foreground-notification delegate on `center`.
 ///
 /// Creates the `WkzUNDelegate` class and singleton instance (if not yet done),
+/// stores the borrowed `*bridge` pointer in the instance's `wkz_bridge` ivar,
 /// then calls `setDelegate:` on the provided center object. Idempotent: if the
 /// delegate instance was already created and wired in a prior call, this is a
 /// no-op.
@@ -140,8 +263,10 @@ fn delegateClass() objc_helpers.Error!objc.Class {
 /// that have already obtained the center successfully, not from headless tests).
 ///
 /// ARC: `delegate_instance` is created with `+new` (+1) and is intentionally
-/// process-lived (never released). The center is also process-lived.
-fn setupDelegate(center: objc.Object) void {
+/// process-lived (never released). The center is also process-lived. The
+/// `*Bridge` stored in the ivar is a BORROWED raw pointer — no retain, no
+/// release, no object semantics (same pattern as `WkzScriptMessageHandler`).
+fn setupDelegate(center: objc.Object, bridge: *Bridge) void {
     // Idempotent guard: only create and assign once per process.
     if (delegate_instance.value != null) {
         log.debug("setupDelegate: already set, skipping", .{});
@@ -161,7 +286,15 @@ fn setupDelegate(center: objc.Object) void {
         log.warn("notifications: WkzUNDelegate +new returned nil", .{});
         return;
     }
-    log.debug("setupDelegate: instance created, calling setDelegate:", .{});
+
+    // Store the borrowed *Bridge in the wkz_bridge ivar. Raw pointer write via
+    // object_setIvar — no retain under MRC. The bridge must outlive the delegate
+    // (both are process-lived in normal use).
+    delegate_instance.setInstanceVariable(
+        bridge_ivar_name,
+        .{ .value = @ptrCast(bridge) },
+    );
+    log.debug("setupDelegate: bridge pointer stored in wkz_bridge ivar", .{});
 
     center.msgSend(void, "setDelegate:", .{delegate_instance});
 
@@ -171,6 +304,12 @@ fn setupDelegate(center: objc.Object) void {
         .{objc.sel("userNotificationCenter:willPresentNotification:withCompletionHandler:").value},
     );
     log.debug("setupDelegate: delegate respondsToSelector willPresent={}", .{responds});
+    const responds2 = delegate_instance.msgSend(
+        bool,
+        "respondsToSelector:",
+        .{objc.sel("userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:").value},
+    );
+    log.debug("setupDelegate: delegate respondsToSelector didReceive={}", .{responds2});
 }
 
 /// Register the `notifications.requestPermission` and `notifications.send`
@@ -191,6 +330,9 @@ pub fn registerHandlers(bridge: *Bridge) std.mem.Allocator.Error!void {
     // Eagerly create the delegate class (headless-safe: class pair registration
     // does not require an app bundle). The instance and setDelegate: call happen
     // lazily inside the handlers once a live center is available.
+    //
+    // Note: `delegateClass()` is open-coded (not via `defineClass`) so it can
+    // add the `wkz_bridge` ivar before `registerClassPair`.
     _ = delegateClass() catch |err| {
         log.warn("notifications: failed to pre-create WkzUNDelegate class: {}", .{err});
     };
@@ -225,8 +367,9 @@ fn handleRequestPermission(bridge: *Bridge, params: std.json.Value, id: ?i64) vo
         .{},
     );
 
-    // Wire the delegate so foreground notifications show banners. Idempotent.
-    setupDelegate(center);
+    // Wire the delegate so foreground notifications show banners and click
+    // callbacks fire. Idempotent.
+    setupDelegate(center, bridge);
 
     // Step 1 — provisional registration (silent, no dialog, always succeeds on
     // first run; no-op on subsequent runs). Options: badge(1)|sound(2)|alert(4)|
@@ -307,7 +450,16 @@ fn handleSend(bridge: *Bridge, params: std.json.Value, id: ?i64) void {
         if (obj.get("id")) |id_val| {
             switch (id_val) {
                 .string => |s| {
-                    // Caller supplied an id — NUL-terminate a copy.
+                    // Validate the caller-supplied id before use. The identifier is
+                    // injected verbatim into a JSON string in
+                    // impDidReceiveNotificationResponse — a `"` or `\` or a control
+                    // character would break the JSON encoding and allow JS injection.
+                    if (!isValidNotificationId(s)) {
+                        log.warn("notifications.send: invalid notification id — contains illegal characters", .{});
+                        if (id) |i| bridge.resolve(i, "false") catch {};
+                        return;
+                    }
+                    // Caller supplied a safe id — NUL-terminate a copy.
                     const z = std.fmt.allocPrintSentinel(gpa, "{s}", .{s}, 0) catch {
                         log.warn("notifications.send: OOM building notification id", .{});
                         if (id) |i| bridge.resolve(i, "false") catch {};
@@ -404,8 +556,9 @@ fn handleSend(bridge: *Bridge, params: std.json.Value, id: ?i64) void {
         .{},
     );
 
-    // Wire the delegate so foreground notifications show banners. Idempotent.
-    setupDelegate(center);
+    // Wire the delegate so foreground notifications show banners and click
+    // callbacks fire. Idempotent.
+    setupDelegate(center, bridge);
 
     // completionHandler is nil (no ObjC blocks per hard rule #3).
     center.msgSend(
@@ -415,6 +568,21 @@ fn handleSend(bridge: *Bridge, params: std.json.Value, id: ?i64) void {
     );
 
     if (id) |i| bridge.resolve(i, "true") catch {};
+}
+
+/// Returns true if `s` is safe to embed verbatim inside a JSON string value.
+///
+/// The identifier flows into a `{"id":"<identifier>"}` JSON payload in
+/// `impDidReceiveNotificationResponse`. A `"` or `\` would break the JSON
+/// encoding; a control character (< 0x20) is illegal in unescaped JSON strings
+/// per RFC 8259. All three are rejected here. Auto-generated identifiers
+/// (`wkz-notif-N`) only use ASCII digits, letters, and hyphens and are always
+/// safe; only caller-supplied ids need this check.
+fn isValidNotificationId(s: []const u8) bool {
+    for (s) |ch| {
+        if (ch == '"' or ch == '\\' or ch < 0x20) return false;
+    }
+    return true;
 }
 
 // =====================================================================
@@ -465,6 +633,47 @@ test "UNNotificationRequest class resolves and responds to requestWithIdentifier
         "respondsToSelector:",
         .{objc.sel("requestWithIdentifier:content:trigger:").value},
     ));
+}
+
+test "WkzUNDelegate class registers both delegate selectors and wkz_bridge ivar" {
+    // delegateClass() is idempotent — if already registered (by a prior test or
+    // the eagerly-called path in registerHandlers) the existing class is returned.
+    const cls = try delegateClass();
+    try std.testing.expect(objc.getClass(delegate_class_name) != null);
+
+    // Both UNUserNotificationCenterDelegate methods must be registered.
+    try std.testing.expect(cls.msgSend(
+        bool,
+        "instancesRespondToSelector:",
+        .{objc.sel("userNotificationCenter:willPresentNotification:withCompletionHandler:").value},
+    ));
+    try std.testing.expect(cls.msgSend(
+        bool,
+        "instancesRespondToSelector:",
+        .{objc.sel("userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:").value},
+    ));
+}
+
+test "WkzUNDelegate wkz_bridge ivar round-trips a *Bridge pointer" {
+    // Prove the raw-pointer ivar mechanism works: alloc an instance, write a
+    // *Bridge into the ivar, read it back, confirm the address matches.
+    const cls = try delegateClass();
+    const inst = cls.msgSend(objc.Object, "alloc", .{})
+        .msgSend(objc.Object, "init", .{});
+    defer inst.msgSend(void, "release", .{});
+
+    var bridge = try Bridge.init(
+        std.testing.allocator,
+        objc.Object{ .value = null },
+        objc.Object{ .value = null },
+    );
+    defer bridge.deinit();
+
+    inst.setInstanceVariable(bridge_ivar_name, .{ .value = @ptrCast(&bridge) });
+    const got = inst.getInstanceVariable(bridge_ivar_name);
+    try std.testing.expect(got.value != null);
+    const recovered: *Bridge = @ptrCast(@alignCast(got.value));
+    try std.testing.expectEqual(&bridge, recovered);
 }
 
 test "registerHandlers registers exactly 2 handlers" {
@@ -600,6 +809,42 @@ test "notifications.send: body present but wrong type (non-string) exits early �
     // object body
     try bridge.dispatchSlice(
         \\{"method":"notifications.send","params":{"title":"hello","body":{}},"id":4}
+    );
+}
+
+test "isValidNotificationId: accepts safe identifiers" {
+    try std.testing.expect(isValidNotificationId("wkz-notif-0"));
+    try std.testing.expect(isValidNotificationId("my-id_123"));
+    try std.testing.expect(isValidNotificationId("abc"));
+    try std.testing.expect(isValidNotificationId("")); // empty string is technically safe
+}
+
+test "isValidNotificationId: rejects identifiers with illegal characters" {
+    try std.testing.expect(!isValidNotificationId("has\"quote"));
+    try std.testing.expect(!isValidNotificationId("has\\backslash"));
+    try std.testing.expect(!isValidNotificationId("has\x01control"));
+    try std.testing.expect(!isValidNotificationId("\x00null"));
+    try std.testing.expect(!isValidNotificationId("ok-prefix\x1f"));
+}
+
+test "notifications.send: caller-supplied id with illegal characters resolves false — headless-safe" {
+    // The validation check happens before any ObjC notification call, so this
+    // test is safe to run headlessly (never reaches currentNotificationCenter).
+    var bridge = try Bridge.init(
+        std.testing.allocator,
+        objc.Object{ .value = null },
+        objc.Object{ .value = null },
+    );
+    defer bridge.deinit();
+    try registerHandlers(&bridge);
+
+    // id with a double-quote — should be rejected before the center call.
+    try bridge.dispatchSlice(
+        \\{"method":"notifications.send","params":{"title":"t","body":"b","id":"bad\"id"},"id":1}
+    );
+    // id with a backslash.
+    try bridge.dispatchSlice(
+        \\{"method":"notifications.send","params":{"title":"t","body":"b","id":"bad\\id"},"id":2}
     );
 }
 

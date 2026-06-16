@@ -17,6 +17,7 @@ zig build run
 Opens a 560×480 window. Suggested flow:
 1. Click **Request Permission** — registers the app with macOS notifications (provisional first, then upgrade dialog for banners).
 2. Click **Send Notification** — fills in title/body and delivers a local notification. If the app is in the foreground the banner appears immediately; in the background it appears as a standard system notification.
+3. Click the notification banner — the **Notification Click** section updates to show "Last clicked: `<identifier>`".
 
 **Cmd+Q** quits.
 
@@ -57,7 +58,12 @@ When the page calls `notifications.send({title, body, id?})`:
 4. `addNotificationRequest:withCompletionHandler:nil` schedules the notification.
 5. Resolves `true` to JS.
 
-**Foreground banners — `WkzUNDelegate`:** without a delegate, macOS suppresses notification banners when the app is in the foreground. `notifications.zig` registers a custom `WkzUNDelegate` ObjC class (inheriting `NSObject`, conforming to `UNUserNotificationCenterDelegate`) that implements `userNotificationCenter:willPresentNotification:withCompletionHandler:`. The IMP reads the completion-handler block's invoke function pointer (at offset 16 of the block struct, per the Darwin block ABI) and calls it with options = banner | list | sound (= 14), requesting full banner display.
+**Foreground banners — `WkzUNDelegate`:** without a delegate, macOS suppresses notification banners when the app is in the foreground. `notifications.zig` registers a custom `WkzUNDelegate` ObjC class (inheriting `NSObject`, conforming to `UNUserNotificationCenterDelegate`) that implements both delegate methods:
+
+- `userNotificationCenter:willPresentNotification:withCompletionHandler:` — called when a notification is about to be delivered while the app is in the foreground. The IMP reads the completion-handler block's invoke function pointer (at offset 16 of the block struct, per the Darwin block ABI) and calls it with options = banner | list | sound (= 14), requesting full banner display.
+- `userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:` — called when the user clicks a notification banner, whether the app is in the foreground or the click brings it to the foreground from the background. The IMP extracts the notification identifier from `response.notification.request.identifier` and calls `bridge.emit("notifications.clicked", "{\"id\":\"<identifier>\"}")`, which evaluates `__wkz_event({type:"notifications.clicked", payload:{id:"<identifier>"}})` in the webview. The page subscribes via `window.__wkz_event` (or the `on()` helper from `@wkz/bridge/events`). The completion handler block (no-arg) is called after the emit.
+
+**`WkzUNDelegate` stores a borrowed `*Bridge` pointer** in an ObjC instance variable (`wkz_bridge`) so the `didReceiveNotificationResponse:` IMP can call `bridge.emit`. The pointer is stored raw (no ARC retain) — the bridge is process-lived in normal use. The class is open-coded (not via `defineClass`) so the ivar can be inserted between `allocateClassPair` and `registerClassPair`.
 
 **ARC notes:**
 - `currentNotificationCenter` returns a singleton — never released.

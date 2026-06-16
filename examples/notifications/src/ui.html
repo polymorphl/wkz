@@ -59,6 +59,15 @@
   </div>
 
   <div class="section">
+    <h2>Notification Click</h2>
+    <p style="font-size:12px;color:#888;margin-bottom:10px;">
+      When you click a notification banner (foreground or background), the
+      identifier of the clicked notification appears here.
+    </p>
+    <div id="status-click" class="status">No notification clicked yet.</div>
+  </div>
+
+  <div class="section">
     <h2>Send Notification</h2>
     <label for="notif-title">Title</label>
     <input type="text" id="notif-title" value="Hello from wkz" placeholder="Notification title" />
@@ -73,6 +82,30 @@
   <script>
     const pendingCalls = new Map();
     let nextId = 0;
+
+    // __wkz_event: Zig pushes events to JS via bridge.emit(). Each event is an
+    // object { type: string, payload: unknown }. We dispatch to registered handlers.
+    const wkzListeners = new Map();
+    window.__wkz_event = function __wkz_event(event) {
+      const handlers = wkzListeners.get(event.type);
+      if (!handlers) return;
+      for (const handler of handlers) {
+        try { handler(event.payload); } catch (e) { console.error('wkz event handler error:', e); }
+      }
+    };
+    function onWkzEvent(type, handler) {
+      let set = wkzListeners.get(type);
+      if (!set) { set = new Set(); wkzListeners.set(type, set); }
+      set.add(handler);
+    }
+
+    // Subscribe to the notifications.clicked push event.
+    onWkzEvent('notifications.clicked', function(payload) {
+      const status = document.getElementById('status-click');
+      const id = (payload && typeof payload.id === 'string') ? payload.id : '(unknown)';
+      status.className = 'status ok';
+      status.textContent = 'Last clicked: ' + id;
+    });
 
     window.__resolve = function __resolve(id, result) {
       const pending = pendingCalls.get(id);
