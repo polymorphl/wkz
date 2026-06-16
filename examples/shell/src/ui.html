@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>wkz Shell Demo</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+      font-size: 14px;
+      background: #1e1e1e;
+      color: #d4d4d4;
+      padding: 32px;
+    }
+    h1 { font-size: 20px; font-weight: 600; color: #fff; margin-bottom: 24px; }
+    h2 { font-size: 14px; font-weight: 600; color: #aaa; margin-bottom: 10px; }
+    .section { margin-bottom: 28px; padding-bottom: 28px; border-bottom: 1px solid #2e2e2e; }
+    .section:last-child { border-bottom: none; }
+    button {
+      padding: 7px 16px;
+      border: none;
+      border-radius: 5px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      background: #0066cc;
+      color: #fff;
+      margin-right: 8px;
+    }
+    button:hover { background: #0077e6; }
+    .status { font-size: 12px; color: #888; margin: 8px 0; min-height: 18px; }
+    .status.ok  { color: #4ec9b0; }
+    .status.err { color: #f44747; }
+    input[type="text"] {
+      width: 100%;
+      background: #2a2a2a;
+      border: 1px solid #3a3a3a;
+      border-radius: 5px;
+      color: #d4d4d4;
+      font-size: 13px;
+      padding: 8px;
+      font-family: inherit;
+      margin-bottom: 8px;
+    }
+    .quick-links { display: flex; flex-wrap: wrap; gap: 8px; }
+  </style>
+</head>
+<body>
+  <h1>wkz Shell Demo</h1>
+
+  <div class="section">
+    <h2>Open URL</h2>
+    <input type="text" id="url-input" value="https://ziglang.org" placeholder="Enter a URL…" />
+    <button id="btn-open">Open in Browser</button>
+    <div id="status-open" class="status"></div>
+  </div>
+
+  <div class="section">
+    <h2>Quick Links</h2>
+    <div class="quick-links">
+      <button class="quick" data-url="https://ziglang.org">ziglang.org</button>
+      <button class="quick" data-url="https://github.com/mitchellh/zig-objc">zig-objc</button>
+      <button class="quick" data-url="https://developer.apple.com/documentation/">Apple Docs</button>
+    </div>
+    <div id="status-quick" class="status"></div>
+  </div>
+
+  <script>
+    const pendingCalls = new Map();
+    let nextId = 0;
+
+    window.__resolve = function __resolve(id, result) {
+      const pending = pendingCalls.get(id);
+      if (pending === undefined) {
+        console.warn('wkz: __resolve received unknown id=' + id);
+        return;
+      }
+      pendingCalls.delete(id);
+      pending(result);
+    };
+
+    function invoke(method, params) {
+      const bridge = window.webkit?.messageHandlers?.bridge;
+      if (!bridge) return Promise.reject(new Error('not inside a WKWebView'));
+      const id = nextId;
+      nextId = nextId < Number.MAX_SAFE_INTEGER ? nextId + 1 : 0;
+      return new Promise((resolve) => {
+        pendingCalls.set(id, resolve);
+        bridge.postMessage(JSON.stringify({ method, params, id }));
+      });
+    }
+
+    document.getElementById('btn-open').addEventListener('click', async () => {
+      const status = document.getElementById('status-open');
+      const url = document.getElementById('url-input').value.trim();
+      if (!url) {
+        status.className = 'status err';
+        status.textContent = 'Enter a URL first.';
+        return;
+      }
+      status.className = 'status';
+      status.textContent = 'Opening…';
+      const result = await invoke('shell.open', url);
+      if (result === true) {
+        status.className = 'status ok';
+        status.textContent = 'Opened: ' + url;
+      } else {
+        status.className = 'status err';
+        status.textContent = 'Failed to open URL.';
+      }
+    });
+
+    document.querySelectorAll('.quick').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const status = document.getElementById('status-quick');
+        const url = btn.dataset.url;
+        status.className = 'status';
+        status.textContent = 'Opening ' + url + '…';
+        const result = await invoke('shell.open', url);
+        if (result === true) {
+          status.className = 'status ok';
+          status.textContent = 'Opened: ' + url;
+        } else {
+          status.className = 'status err';
+          status.textContent = 'Failed to open: ' + url;
+        }
+      });
+    });
+  </script>
+</body>
+</html>

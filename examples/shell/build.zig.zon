@@ -1,0 +1,16 @@
+.{
+    .name = .shell_example,
+    .version = "0.0.0",
+    .fingerprint = 0x99d458184ddabbf,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .wkz = .{
+            .path = "../..",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

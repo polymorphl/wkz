@@ -69,18 +69,13 @@ The only external dependency is **[mitchellh/zig-objc](https://github.com/mitche
 
 ## Using wkz as a dependency
 
-Add to your `build.zig.zon`:
+Fetch and pin the hash in one step:
 
-```zig
-.dependencies = .{
-    .wkz = .{
-        .url = "https://github.com/polymorphl/wkz/archive/v0.1.0.tar.gz",
-        .hash = "<run zig fetch --save to fill this in>",
-    },
-},
+```sh
+zig fetch --save https://github.com/polymorphl/wkz/archive/v0.1.0.tar.gz
 ```
 
-Wire it in `build.zig`:
+This writes the `.url` and `.hash` into your `build.zig.zon` automatically. Then wire it in `build.zig`:
 
 ```zig
 const wkz_dep = b.dependency("wkz", .{ .target = target, .optimize = optimize });
@@ -88,11 +83,27 @@ exe.root_module.addImport("wkz", wkz_dep.module("wkz"));
 // AppKit, WebKit, Foundation, libobjc are linked transitively — nothing else needed.
 ```
 
-Then in your Zig source:
+Then in your Zig source — a window in ~10 lines:
 
 ```zig
 const wkz = @import("wkz");
-// wkz.app.App, wkz.window.Window, wkz.webview.WebView, wkz.bridge.Bridge, wkz.scheme ...
+
+pub fn main() !void {
+    var app = try wkz.app.App.init();
+    try app.installDefaultMenu("MyApp");
+
+    var window = try wkz.window.Window.init(.{ .width = 800, .height = 600, .title = "MyApp" });
+    defer window.deinit();
+
+    var webview = try wkz.webview.WebView.init();
+    defer webview.deinit();
+
+    webview.attach(window);
+    try webview.loadHTMLString("<h1>Hello from wkz</h1>");
+
+    app.activate();
+    app.run(); // blocks — exits via Cmd+Q
+}
 ```
 
 wkz is a pure macOS/ObjC layer — no frontend or build pipeline is imposed. Load content however you like: `loadHTMLString`, `loadURL` to a dev server, or wire up your own `SchemeHandler` for embedded assets.
@@ -115,6 +126,7 @@ Each example is a standalone Zig package using wkz as a local path dependency �
 | [`examples/menu/`](examples/menu/) | Menu API: full `NSMenuBar` with Zig callback handler, native selectors, and standard Edit/Window menus. |
 | [`examples/multi_window/`](examples/multi_window/) | Multi-window: two independent windows with close callbacks and quit-on-last-close policy. |
 | [`examples/events/`](examples/events/) | Window events: focus/blur pushed from Zig to JS via NSNotificationCenter — `window.focused` / `window.blurred` bridge events. |
+| [`examples/shell/`](examples/shell/) | Shell integration: open URLs in the default browser or registered scheme handler via `shell.open` (NSWorkspace). |
 
 See each folder's `README.md` for full instructions.
 

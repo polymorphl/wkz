@@ -14,6 +14,7 @@
 //!   - `alert`   — NSAlert modal dialog (`registerAlertHandler`)
 //!   - `statusitem` — NSStatusItem menu-bar status item (`StatusItem.init`, `registerBridgeHandlers`, `deinit`)
 //!   - `clipboard`  — NSPasteboard clipboard access (`registerClipboardHandlers`)
+//!   - `shell`      — NSWorkspace shell integration (`registerHandlers`)
 
 const std = @import("std");
 
@@ -72,6 +73,10 @@ pub const clipboard = @import("clipboard.zig");
 /// Window focus/blur events via NSNotificationCenter: `WindowEvents.init`,
 /// `deinit`. Emits `window.focused` / `window.blurred` events to JS.
 pub const events = @import("events.zig");
+
+/// Shell integration: `registerHandlers`. Handles `shell.open` from JS,
+/// opening URLs via `NSWorkspace openURL:`.
+pub const shell = @import("shell.zig");
 
 test {
     std.testing.refAllDecls(@This());

@@ -4,7 +4,17 @@ Single source of truth for work. Statuses: `TODO → IN_PROGRESS → IN_REVIEW �
 
 ## Current focus
 
-M6 IN_PROGRESS — Foundation Extensions (dragdrop, clipboard, window events, fs.writeBinary).
+M7 TODO — System Integration (shell.openURL, OS notifications).
+
+---
+
+## M7 — System Integration
+
+| ID | Task | Status |
+|----|------|--------|
+| 7.1 | `src/shell.zig` — `shell.open(url)` bridge handler via `NSWorkspace openURL:`; `examples/shell/` | DONE |
+| 7.2 | `src/notifications.zig` — `UNUserNotificationCenter` permission request + `notifications.send(title, body, id?)`; `examples/notifications/` | TODO |
+| 7.3 | Notification click callback — UNUserNotificationCenterDelegate ObjC class; emits `notifications.clicked(id)` event to JS | TODO |
 
 ---
 
@@ -69,6 +79,8 @@ M6 IN_PROGRESS — Foundation Extensions (dragdrop, clipboard, window events, fs
 ---
 
 ## Log
+
+- M7.1 — orchestrator — code-reviewer APPROVE (fix cycle 1: page_allocator→bridge.allocator MAJOR fixed, openURL: return value captured MINOR fixed). test-runner 189/197 (1 skip pre-existing); +1 test (null-id fire-and-forget branch). Manual checklist M7.1-G1..G4. → DONE
 
 - M5.4 — orchestrator — tagged v0.1.0, pushed main + tag to origin. → DONE
 - M5.3 — orchestrator — CI workflow verified pre-existing from M1.1 scaffold: macos-latest, mlugg/setup-zig@v2, version: 0.16.0, push+PR triggers, zig build + zig build test. No changes needed. → DONE
