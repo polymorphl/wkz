@@ -1,3 +1,5 @@
+import type { MethodName } from './generated';
+
 // @wkz/bridge — typed client for the wkz JS<->Zig bridge.
 //
 // Calls flow JS -> Zig over the WKScriptMessageHandler registered as "bridge".
@@ -106,7 +108,7 @@ if (_hot) {
  * - Rejects immediately when called outside a WKWebView context (webkit bridge
  *   not available).
  */
-export function invoke<T>(method: string, params?: unknown): Promise<T> {
+export function invoke<T>(method: MethodName, params?: unknown): Promise<T> {
   const messageBridge = window.webkit?.messageHandlers?.bridge;
   if (!messageBridge) {
     return Promise.reject(
