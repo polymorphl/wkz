@@ -42,7 +42,9 @@ A pure-Zig macOS desktop shell library: AppKit + WKWebView driven directly throu
 zig build                 # build the library + example
 zig build run -Ddev=true  # run against the Vite dev server
 zig build test            # run all tests (headless)
-cd frontend && npm run dev # start the Vite dev server (port 5173)
+zig build dev             # dev mode: Vite + app in one command (recommended)
+# or manually:
+cd frontend && bun run dev # start the Vite dev server (port 5173)
 ```
 
 ## Orchestration protocol

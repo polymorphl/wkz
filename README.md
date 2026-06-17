@@ -10,7 +10,7 @@ Think *"the [wry](https://github.com/tauri-apps/wry) layer of Tauri, for macOS, 
 
 - **Zig 0.16.x** — verify with `zig version`; no other version is supported.
 - **Xcode Command Line Tools** — `xcode-select --install` (macOS frameworks + SDK).
-- **Node.js** — for the Vite frontend in `examples/basic/`; optional unless you work on that example.
+- **Bun** — for the Vite frontend in `examples/basic/`; optional unless you work on that example. Install from https://bun.sh.
 
 ## Quick start
 
@@ -20,10 +20,13 @@ zig build docs                      # generate API docs → zig-out/docs/
 # then serve (file:// is blocked by CORS):
 python3 -m http.server -d zig-out/docs 8080  # open http://localhost:8080
 
-# run the basic example (Vite frontend)
+# run the basic example in dev mode (one command)
 cd examples/basic
+zig build dev                       # starts Vite + app together
+
+# or manually (two terminals):
 zig build run -Ddev=true            # dev: loads http://localhost:5173
-cd frontend && npm run dev           # start the Vite dev server
+cd frontend && bun run dev          # start the Vite dev server
 ```
 
 ## Contributing
