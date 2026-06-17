@@ -1,0 +1,7 @@
+{
+  "name": "wkz-tools",
+  "private": true,
+  "devDependencies": {
+    "bun-types": "latest"
+  }
+}
