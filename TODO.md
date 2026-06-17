@@ -1,12 +1,5 @@
 Gaps DX majeurs
 
-1. Deux terminaux pour démarrer
-
-Dev nécessite zig build run -Ddev=true + cd frontend && npm run dev séparément. Pas de commande unique. Wry/Tauri ont tauri dev qui orchestre les deux.
-
-Fix: zig build dev qui spawne le frontend en subprocess.
-
----
 2. Zéro type safety sur le bridge
 
 invoke<T>("mon.handler", {...}) — le "mon.handler" est une string magique, T est manuel. Aucun autocomplete, aucune erreur si le nom change côté Zig.
