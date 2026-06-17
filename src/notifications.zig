@@ -125,11 +125,18 @@ fn impWillPresentNotification(
 ///
 /// ARC: `*Bridge` is stored raw (no retain) — same semantics as `wkz_ctx` on
 /// `WkzScriptMessageHandler`. The bridge pointer is valid for the process
-/// lifetime (see `setupDelegate` ownership note). The allocator-allocated JSON
-/// payload slice is freed before return. All ObjC objects here are borrowed
-/// from the system call stack (not retained, not released by us).
+/// lifetime (see `setupDelegate` ownership note). All allocator-allocated
+/// slices (escaped_backslash, escaped_id, payload) are freed before return via
+/// `defer`. All ObjC objects here are borrowed from the system call stack (not
+/// retained, not released by us).
 ///
 /// No ObjC blocks created — we only call the block passed to us.
+///
+/// JSON safety (receive side): the OS-returned identifier is JSON-escaped
+/// (`\` → `\\`, then `"` → `\"`) before embedding in the payload. This
+/// handles identifiers from any source (including external notifications not
+/// sent through our bridge) and is the second layer of a two-layer defence —
+/// `isValidNotificationId` guards caller-supplied ids on the send side.
 ///
 /// The completion handler for `didReceiveNotificationResponse:` takes no
 /// arguments: its invoke signature is `fn(*anyopaque) callconv(.c) void`.
@@ -171,14 +178,53 @@ fn impDidReceiveNotificationResponse(
     const identifier: []const u8 = if (identifier_cstr) |s| std.mem.span(s) else "";
 
     // Build JSON payload: {"id":"<identifier>"}
-    // The identifier is auto-generated as "wkz-notif-N" or supplied by the
-    // caller — we assume it contains no `"` or `\` (no JSON escaping needed
-    // for the common case; callers using custom ids are responsible for safe
-    // values).
+    //
+    // JSON-escape the identifier before embedding: `\` → `\\` first (so the
+    // inserted backslashes are not themselves re-escaped), then `"` → `\"`.
+    // This is necessary even for auto-generated ids: the notification may have
+    // come from an external source (not our bridge), so we cannot assume the
+    // OS-supplied identifier is free of `"` or `\`.
+    //
+    // replaceOwned (std/mem.zig:4199):
+    //   pub fn replaceOwned(T, allocator, input, needle, replacement) Allocator.Error![]T
+    const escaped_backslash = std.mem.replaceOwned(
+        u8,
+        bridge.allocator,
+        identifier,
+        "\\",
+        "\\\\",
+    ) catch {
+        log.warn("notifications: didReceiveNotificationResponse: OOM escaping identifier (backslash)", .{});
+        if (handler != null) {
+            const InvokeFn = *const fn (*anyopaque) callconv(.c) void;
+            const invoke_ptr: *const InvokeFn = @ptrFromInt(@intFromPtr(handler.?) + 16);
+            invoke_ptr.*(handler.?);
+        }
+        return;
+    };
+    defer bridge.allocator.free(escaped_backslash);
+
+    const escaped_id = std.mem.replaceOwned(
+        u8,
+        bridge.allocator,
+        escaped_backslash,
+        "\"",
+        "\\\"",
+    ) catch {
+        log.warn("notifications: didReceiveNotificationResponse: OOM escaping identifier (quote)", .{});
+        if (handler != null) {
+            const InvokeFn = *const fn (*anyopaque) callconv(.c) void;
+            const invoke_ptr: *const InvokeFn = @ptrFromInt(@intFromPtr(handler.?) + 16);
+            invoke_ptr.*(handler.?);
+        }
+        return;
+    };
+    defer bridge.allocator.free(escaped_id);
+
     const payload = std.fmt.allocPrint(
         bridge.allocator,
         "{{\"id\":\"{s}\"}}",
-        .{identifier},
+        .{escaped_id},
     ) catch {
         log.warn("notifications: didReceiveNotificationResponse: OOM building payload", .{});
         if (handler != null) {
@@ -450,10 +496,10 @@ fn handleSend(bridge: *Bridge, params: std.json.Value, id: ?i64) void {
         if (obj.get("id")) |id_val| {
             switch (id_val) {
                 .string => |s| {
-                    // Validate the caller-supplied id before use. The identifier is
-                    // injected verbatim into a JSON string in
-                    // impDidReceiveNotificationResponse — a `"` or `\` or a control
-                    // character would break the JSON encoding and allow JS injection.
+                    // Validate the caller-supplied id before use (defence-in-depth).
+                    // impDidReceiveNotificationResponse escapes the OS-returned
+                    // identifier on the receive side; this guard catches misuse on
+                    // the send side early, before the id reaches the OS.
                     if (!isValidNotificationId(s)) {
                         log.warn("notifications.send: invalid notification id — contains illegal characters", .{});
                         if (id) |i| bridge.resolve(i, "false") catch {};
@@ -570,14 +616,11 @@ fn handleSend(bridge: *Bridge, params: std.json.Value, id: ?i64) void {
     if (id) |i| bridge.resolve(i, "true") catch {};
 }
 
-/// Returns true if `s` is safe to embed verbatim inside a JSON string value.
-///
-/// The identifier flows into a `{"id":"<identifier>"}` JSON payload in
-/// `impDidReceiveNotificationResponse`. A `"` or `\` would break the JSON
-/// encoding; a control character (< 0x20) is illegal in unescaped JSON strings
-/// per RFC 8259. All three are rejected here. Auto-generated identifiers
-/// (`wkz-notif-N`) only use ASCII digits, letters, and hyphens and are always
-/// safe; only caller-supplied ids need this check.
+/// Fail-fast guard for caller-supplied ids registered through `handleSend`.
+/// Rejects `"`, `\`, and control characters to catch misuse early.
+/// `impDidReceiveNotificationResponse` independently escapes the OS-returned
+/// identifier on the receive side, so this is a defence-in-depth layer, not
+/// the sole guard.
 fn isValidNotificationId(s: []const u8) bool {
     for (s) |ch| {
         if (ch == '"' or ch == '\\' or ch < 0x20) return false;
@@ -846,6 +889,29 @@ test "notifications.send: caller-supplied id with illegal characters resolves fa
     try bridge.dispatchSlice(
         \\{"method":"notifications.send","params":{"title":"t","body":"b","id":"bad\\id"},"id":2}
     );
+}
+
+test "impDidReceiveNotificationResponse: identifier JSON escaping is correct" {
+    // Verify the two-step escaping: `\` → `\\` first, then `"` → `\"`.
+    // Uses the same replaceOwned calls as the IMP to prove the escaping is
+    // correct and leak-free under testing.allocator.
+    const gpa = std.testing.allocator;
+
+    const cases = [_]struct { input: []const u8, want: []const u8 }{
+        .{ .input = "safe-id", .want = "safe-id" },
+        .{ .input = "has\"quote", .want = "has\\\"quote" },
+        .{ .input = "has\\back", .want = "has\\\\back" },
+        .{ .input = "both\\\"", .want = "both\\\\\\\"" },
+        .{ .input = "", .want = "" },
+    };
+
+    for (cases) |tc| {
+        const step1 = try std.mem.replaceOwned(u8, gpa, tc.input, "\\", "\\\\");
+        defer gpa.free(step1);
+        const step2 = try std.mem.replaceOwned(u8, gpa, step1, "\"", "\\\"");
+        defer gpa.free(step2);
+        try std.testing.expectEqualStrings(tc.want, step2);
+    }
 }
 
 test "notifications.send: fire-and-forget (no id) early-exit branches do not panic" {

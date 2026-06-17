@@ -14,7 +14,7 @@ M7 TODO — System Integration (shell.openURL, OS notifications).
 |----|------|--------|
 | 7.1 | `src/shell.zig` — `shell.open(url)` bridge handler via `NSWorkspace openURL:`; `examples/shell/` | DONE |
 | 7.2 | `src/notifications.zig` — `UNUserNotificationCenter` permission request + `notifications.send(title, body, id?)`; `examples/notifications/` | DONE |
-| 7.3 | Notification click callback — UNUserNotificationCenterDelegate ObjC class; emits `notifications.clicked(id)` event to JS | TODO |
+| 7.3 | Notification click callback — UNUserNotificationCenterDelegate ObjC class; emits `notifications.clicked(id)` event to JS | DONE |
 
 ---
 
@@ -80,6 +80,7 @@ M7 TODO — System Integration (shell.openURL, OS notifications).
 
 ## Log
 
+- M7.3 — orchestrator — code-reviewer APPROVE_WITH_MINORS (2 minors: stale comments on `isValidNotificationId` justification, fixed by cavecrew-builder). `impDidReceiveNotificationResponse` IMP was already present from prior session; M7.3 fix: two-step JSON escaping (`\`→`\\`, `"`→`\"`) on OS-returned identifier + 5-case escaping test. 216/217 tests (1 skip pre-existing). → DONE
 - M7.2 — orchestrator — code-reviewer APPROVE_WITH_MINORS (5 minors fixed: typo, counter comment, nil check on content +new, comptime block ABI assertion, extra blank line). Two-step provisional+upgrade permission flow; WkzUNDelegate foreground-banner delegate; block invoke at offset 16 confirmed working. 209/210 tests (1 skip pre-existing). → DONE
 - M7.1 — orchestrator — code-reviewer APPROVE (fix cycle 1: page_allocator→bridge.allocator MAJOR fixed, openURL: return value captured MINOR fixed). test-runner 189/197 (1 skip pre-existing); +1 test (null-id fire-and-forget branch). Manual checklist M7.1-G1..G4. → DONE
 
