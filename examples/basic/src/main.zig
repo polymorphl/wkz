@@ -11,8 +11,6 @@ pub fn main() !void {
 
     var app = try wkz.app.App.init();
 
-    try app.installDefaultMenu("basic");
-
     const window = try wkz.window.Window.init(.{ .width = 900, .height = 600, .title = "basic" });
 
     const webview = if (build_options.dev) blk: {
@@ -22,6 +20,7 @@ pub fn main() !void {
         break :blk try wkz.webview.WebView.initWithSchemeHandler(scheme_handler.object(), "app");
     };
     webview.attach(window);
+    if (build_options.dev) webview.enableDevTools();
 
     var bridge = try wkz.bridge.Bridge.init(
         gpa.allocator(),
@@ -35,6 +34,11 @@ pub fn main() !void {
             if (id) |i| b.resolve(i, "\"pong\"") catch {};
         }
     }.handle);
+
+    try app.setMenuBar(gpa.allocator(), .{
+        .app = .{ .name = "basic" },
+        .standard_dev_menu = if (build_options.dev) webview.ns_webview else null,
+    });
 
     if (build_options.dev) {
         try webview.loadURL("http://localhost:5173");

@@ -76,6 +76,10 @@ pub const MenuBarConfig = struct {
     standard_edit_menu: bool = false,
     /// Insert a standard Window menu (Minimize/Zoom/Close) using native selectors.
     standard_window_menu: bool = false,
+    /// When non-null, insert a Developer menu with "Show/Close Web Inspector" (Cmd+Opt+I).
+    /// Pass `webview.ns_webview`. The menu item title toggles with inspector visibility.
+    /// `null` = no Developer menu.
+    standard_dev_menu: ?objc.Object = null,
 };
 
 /// Errors from menu construction.
@@ -100,6 +104,9 @@ const ActionEntry = union(enum) {
         /// Owned by the action table slice, freed in freeActionTable.
         json: []u8,
     },
+    /// ctx = WKWebView ns_webview.value cast to *anyopaque.
+    /// Used by validateMenuItem: to check inspector visibility and update the title.
+    dev_inspector: *anyopaque,
 };
 
 /// Heap-allocated slice of ActionEntry, indexed by NSMenuItem.tag.
@@ -114,7 +121,7 @@ pub fn freeActionTable(allocator: std.mem.Allocator) void {
     for (g_action_table) |*entry| {
         switch (entry.*) {
             .bridge => |*b| allocator.free(b.json),
-            .zig => {},
+            .zig, .dev_inspector => {},
         }
     }
     if (g_action_table.len > 0) allocator.free(g_action_table);
@@ -132,6 +139,7 @@ pub fn menuTargetClass() Error!objc.Class {
         return Error.ClassNotFound;
     errdefer objc.disposeClassPair(cls);
     std.debug.assert(cls.addMethod("menuAction:", impMenuAction));
+    std.debug.assert(cls.addMethod("validateMenuItem:", impValidateMenuItem));
     objc.registerClassPair(cls);
     return cls;
 }
@@ -154,6 +162,39 @@ fn impMenuAction(
         .zig => |z| z.callback(z.ctx),
         .bridge => |b| b.bridge_ptr.dispatchSlice(b.json) catch |err|
             std.log.warn("[wkz] menu bridge dispatch failed: {s}", .{@errorName(err)}),
+        .dev_inspector => |ctx| showWebInspectorCallback(ctx),
+    }
+}
+
+/// NSMenuItemValidation: called by AppKit before displaying a menu item bound
+/// to WkzMenuTarget. For dev_inspector entries, updates the title to reflect
+/// whether the inspector is currently visible.
+fn impValidateMenuItem(
+    _self: c.id,
+    _cmd: c.SEL,
+    item: c.id,
+) callconv(.c) bool {
+    _ = _self;
+    _ = _cmd;
+    const ns_item = objc.Object{ .value = item };
+    const tag = ns_item.msgSend(c_long, "tag", .{});
+    if (tag < 0 or @as(usize, @intCast(tag)) >= g_action_table.len) return true;
+    const entry = g_action_table[@as(usize, @intCast(tag))];
+    switch (entry) {
+        .dev_inspector => |ctx| {
+            const NSString = objc.getClass("NSString") orelse return true;
+            const wv = objc.Object{ .value = @ptrCast(@alignCast(ctx)) };
+            const inspector = wv.msgSend(objc.Object, "_inspector", .{});
+            const visible = if (inspector.value != null)
+                inspector.msgSend(bool, "isVisible", .{})
+            else
+                false;
+            const raw: [*:0]const u8 = if (visible) "Close Web Inspector" else "Show Web Inspector";
+            const title_ns = NSString.msgSend(objc.Object, "stringWithUTF8String:", .{raw});
+            ns_item.msgSend(void, "setTitle:", .{title_ns});
+            return true;
+        },
+        else => return true,
     }
 }
 
@@ -193,6 +234,7 @@ fn countConfigActions(config: MenuBarConfig) usize {
     }
     n += countCustomActions(config.app.extra_items);
     for (config.menus) |m| n += countCustomActions(m.items);
+    if (config.standard_dev_menu != null) n += 1;
     return n;
 }
 
@@ -219,7 +261,7 @@ fn addMenuItems(
         for (entries[tag_counter..tag]) |*e| {
             switch (e.*) {
                 .bridge => |b| allocator.free(b.json),
-                .zig => {},
+                .zig, .dev_inspector => {},
             }
         }
     }
@@ -293,10 +335,24 @@ fn addMenuItems(
     return tag;
 }
 
-// EditItem and WinItem are file-level types (Zig 0.16 does not allow const
-// struct declarations inside functions in all contexts).
+// EditItem and WinItem are file-level types (Zig 0.16 does not allow
+// const struct declarations inside functions in all contexts).
 const EditItem = struct { t: [:0]const u8, k: [:0]const u8, s: [:0]const u8 };
 const WinItem = struct { t: [:0]const u8, k: [:0]const u8, s: [:0]const u8 };
+
+/// Zig action callback for "Show Web Inspector". ctx is WKWebView.ns_webview.value
+/// cast to *anyopaque. Fetches `-[WKWebView _inspector]` (private, stable) then calls
+/// `-[WKInspector show]` — no-argument form, responds on macOS 13+.
+fn showWebInspectorCallback(ctx: *anyopaque) void {
+    const wv = objc.Object{ .value = @ptrCast(@alignCast(ctx)) };
+    const inspector = wv.msgSend(objc.Object, "_inspector", .{});
+    if (inspector.value == null) return;
+    if (inspector.msgSend(bool, "isVisible", .{})) {
+        inspector.msgSend(void, "close", .{});
+    } else {
+        inspector.msgSend(void, "show", .{});
+    }
+}
 
 /// Build and install a complete NSMenuBar from config. Allocates g_action_table.
 /// Must be called on the main thread, before app.run().
@@ -324,7 +380,7 @@ pub fn buildMenuBar(
         for (entries[0..tag]) |*e| {
             switch (e.*) {
                 .bridge => |b| allocator.free(b.json),
-                .zig => {},
+                .zig, .dev_inspector => {},
             }
         }
         if (n_entries > 0) allocator.free(entries);
@@ -624,6 +680,45 @@ pub fn buildMenuBar(
         main_menu.msgSend(void, "addItem:", .{win_top});
     }
 
+    // ── Standard Developer menu ───────────────────────────────────────────────
+    if (config.standard_dev_menu) |ns_webview| {
+        const dev_title_ns = nsStringZ(NSString, "Developer");
+        defer dev_title_ns.msgSend(void, "release", .{});
+        const dev_menu = NSMenu.msgSend(objc.Object, "alloc", .{})
+            .msgSend(objc.Object, "initWithTitle:", .{dev_title_ns});
+        defer dev_menu.msgSend(void, "release", .{});
+
+        const empty_key_d = nsStringZ(NSString, "");
+        defer empty_key_d.msgSend(void, "release", .{});
+        const dev_top = NSMenuItem.msgSend(objc.Object, "alloc", .{})
+            .msgSend(objc.Object, "initWithTitle:action:keyEquivalent:", .{
+            dev_title_ns, @as(c.SEL, @ptrFromInt(0)), empty_key_d,
+        });
+        defer dev_top.msgSend(void, "release", .{});
+
+        {
+            const t = nsStringZ(NSString, "Show Web Inspector");
+            defer t.msgSend(void, "release", .{});
+            const k = nsStringZ(NSString, "i");
+            defer k.msgSend(void, "release", .{});
+            const it = NSMenuItem.msgSend(objc.Object, "alloc", .{})
+                .msgSend(objc.Object, "initWithTitle:action:keyEquivalent:", .{
+                t, objc.sel("menuAction:"), k,
+            });
+            defer it.msgSend(void, "release", .{});
+            // Cmd+Opt+I — NSEventModifierFlagOption (1<<19) | NSEventModifierFlagCommand (1<<20)
+            it.msgSend(void, "setKeyEquivalentModifierMask:", .{@as(c_ulong, (1 << 19) | (1 << 20))});
+            it.msgSend(void, "setTarget:", .{menu_target});
+            it.msgSend(void, "setTag:", .{@as(c_long, @intCast(tag))});
+            entries[tag] = .{ .dev_inspector = @ptrCast(ns_webview.value.?) };
+            tag += 1;
+            dev_menu.msgSend(void, "addItem:", .{it});
+        }
+
+        dev_top.msgSend(void, "setSubmenu:", .{dev_menu});
+        main_menu.msgSend(void, "addItem:", .{dev_top});
+    }
+
     // Install menu bar and commit action table.
     ns_app.msgSend(void, "setMainMenu:", .{main_menu});
     g_action_table = entries;
@@ -706,7 +801,7 @@ test "ActionEntry dispatch: zig callback fires via direct table lookup" {
     const entry = &g_action_table[0];
     switch (entry.*) {
         .zig => |z| z.callback(z.ctx),
-        .bridge => unreachable,
+        .bridge, .dev_inspector => unreachable,
     }
     try std.testing.expect(fired);
 }
@@ -728,6 +823,7 @@ test "MenuBarConfig standard flags default to false" {
     const cfg = MenuBarConfig{ .app = .{ .name = "TestApp" } };
     try std.testing.expect(!cfg.standard_edit_menu);
     try std.testing.expect(!cfg.standard_window_menu);
+    try std.testing.expect(cfg.standard_dev_menu == null);
     try std.testing.expectEqual(@as(usize, 0), cfg.menus.len);
 }
 
