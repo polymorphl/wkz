@@ -42,6 +42,8 @@ In examples that embed a frontend, dev vs prod is the **`-Ddev` build option**, 
 - `-Ddev=true` — the WKWebView loads `http://localhost:5173`.
 - release (default) — an `app://` URL scheme handler serves `@embedFile`'d Vite output.
 
+In dev mode, a **Developer** menu is injected automatically (when `standard_dev_menu` is set). Use **Developer → Show Web Inspector** or **⌘⌥I** to open/close the WebKit inspector.
+
 ## Architecture
 
 | Path | Responsibility |
