@@ -69,6 +69,30 @@ pub const WebView = struct {
             .msgSend(objc.Object, "init", .{});
         defer config.msgSend(void, "release", .{});
 
+        // NSUserDefaults approach: process-wide flag read by WebKit at WKWebView init.
+        // More reliable than KVC on WKPreferences on macOS 13+. Autoreleased NSString (+0).
+        {
+            const NSUserDefaults = objc.getClass("NSUserDefaults") orelse return Error.ClassNotFound;
+            const NSNumber2 = objc.getClass("NSNumber") orelse return Error.ClassNotFound;
+            const NSString2 = objc.getClass("NSString") orelse return Error.ClassNotFound;
+            const defaults = NSUserDefaults.msgSend(objc.Object, "standardUserDefaults", .{});
+            const yes2 = NSNumber2.msgSend(objc.Object, "numberWithBool:", .{@as(bool, true)});
+            const ud_key = NSString2.msgSend(objc.Object, "stringWithUTF8String:", .{"WebKitDeveloperExtras"});
+            const ud_key_r = ud_key.msgSend(objc.Object, "retain", .{});
+            defer ud_key_r.msgSend(void, "release", .{});
+            defaults.msgSend(void, "setObject:forKey:", .{ yes2, ud_key_r });
+        }
+
+        // Enable in-app developer tools (right-click Inspect Element, Cmd+Opt+I).
+        // Use the private setter directly — KVC key "developerExtrasEnabled" looks for
+        // setDeveloperExtrasEnabled: which does not exist; the real setter is private
+        // _setDeveloperExtrasEnabled:. Must be set before webview creation so the web
+        // process receives it on startup.
+        {
+            const prefs = config.msgSend(objc.Object, "preferences", .{});
+            prefs.msgSend(void, "_setDeveloperExtrasEnabled:", .{@as(bool, true)});
+        }
+
         // alloc/init -> +1 reference owned by this struct (released in deinit).
         // CGRectZero is fine: attach() resizes to the contentView bounds.
         const ns_webview = WKWebView.msgSend(objc.Object, "alloc", .{})
@@ -159,6 +183,30 @@ pub const WebView = struct {
         defer ns_scheme.msgSend(void, "release", .{});
         config.msgSend(void, "setURLSchemeHandler:forURLScheme:", .{ handler, ns_scheme });
 
+        // NSUserDefaults approach: process-wide flag read by WebKit at WKWebView init.
+        // More reliable than KVC on WKPreferences on macOS 13+. Autoreleased NSString (+0).
+        {
+            const NSUserDefaults = objc.getClass("NSUserDefaults") orelse return Error.ClassNotFound;
+            const NSNumber2 = objc.getClass("NSNumber") orelse return Error.ClassNotFound;
+            const NSString2 = objc.getClass("NSString") orelse return Error.ClassNotFound;
+            const defaults = NSUserDefaults.msgSend(objc.Object, "standardUserDefaults", .{});
+            const yes2 = NSNumber2.msgSend(objc.Object, "numberWithBool:", .{@as(bool, true)});
+            const ud_key = NSString2.msgSend(objc.Object, "stringWithUTF8String:", .{"WebKitDeveloperExtras"});
+            const ud_key_r = ud_key.msgSend(objc.Object, "retain", .{});
+            defer ud_key_r.msgSend(void, "release", .{});
+            defaults.msgSend(void, "setObject:forKey:", .{ yes2, ud_key_r });
+        }
+
+        // Enable in-app developer tools (right-click Inspect Element, Cmd+Opt+I).
+        // Use the private setter directly — KVC key "developerExtrasEnabled" looks for
+        // setDeveloperExtrasEnabled: which does not exist; the real setter is private
+        // _setDeveloperExtrasEnabled:. Must be set before webview creation so the web
+        // process receives it on startup.
+        {
+            const prefs = config.msgSend(objc.Object, "preferences", .{});
+            prefs.msgSend(void, "_setDeveloperExtrasEnabled:", .{@as(bool, true)});
+        }
+
         // alloc/init -> +1 WKWebView owned by this struct (released in deinit).
         const ns_webview = WKWebView.msgSend(objc.Object, "alloc", .{})
             .msgSend(objc.Object, "initWithFrame:configuration:", .{ CGRectZero, config });
@@ -218,6 +266,41 @@ pub const WebView = struct {
     /// Must be called on the main thread.
     pub fn deinit(self: WebView) void {
         self.ns_webview.msgSend(void, "release", .{});
+    }
+
+    /// Enable the Web Inspector via KVC `developerExtrasEnabled` on `WKPreferences`.
+    /// Stable semi-private key since macOS 10.11; supplements `setInspectable:(true)`
+    /// (already called in `init`/`initWithSchemeHandler`) to ensure Cmd+Opt+I works
+    /// on pre-13.3 macOS and activates `showWebInspector:` menu routing.
+    ///
+    /// NOTE: As of the current implementation, `init` and `initWithSchemeHandler` both
+    /// set `developerExtrasEnabled` pre-creation on `WKPreferences`, so this function
+    /// is redundant for the default init paths. It is kept for external callers or as
+    /// an explicit post-creation attempt on macOS 13.3+ where the KVC setter may still
+    /// propagate. Calling it after init is harmless (the value is already set).
+    ///
+    /// Must be called on the main thread.
+    pub fn enableDevTools(self: WebView) void {
+        // NSUserDefaults approach: process-wide flag read by WebKit at WKWebView init.
+        // More reliable than KVC on WKPreferences on macOS 13+. Autoreleased NSString (+0).
+        {
+            const UDClass = objc.getClass("NSUserDefaults") orelse return;
+            const NSNumUD = objc.getClass("NSNumber") orelse return;
+            const NSStrUD = objc.getClass("NSString") orelse return;
+            const defaults = UDClass.msgSend(objc.Object, "standardUserDefaults", .{});
+            const yes2 = NSNumUD.msgSend(objc.Object, "numberWithBool:", .{@as(bool, true)});
+            const ud_key = NSStrUD.msgSend(objc.Object, "stringWithUTF8String:", .{"WebKitDeveloperExtras"});
+            const ud_key_r = ud_key.msgSend(objc.Object, "retain", .{});
+            defer ud_key_r.msgSend(void, "release", .{});
+            defaults.msgSend(void, "setObject:forKey:", .{ yes2, ud_key_r });
+        }
+
+        // Direct private setter (post-creation attempt; may propagate on macOS 13.3+).
+        {
+            const config_copy = self.ns_webview.msgSend(objc.Object, "configuration", .{});
+            const prefs = config_copy.msgSend(objc.Object, "preferences", .{});
+            prefs.msgSend(void, "_setDeveloperExtrasEnabled:", .{@as(bool, true)});
+        }
     }
 };
 
@@ -283,6 +366,10 @@ test "WebView exposes the documented public API surface" {
     try std.testing.expectEqual([:0]const u8, load_url_params[1].type.?);
 
     try std.testing.expectEqual(void, @typeInfo(@TypeOf(WebView.deinit)).@"fn".return_type.?);
+
+    // enableDevTools: added in M8.1.
+    try std.testing.expect(@hasDecl(WebView, "enableDevTools"));
+    try std.testing.expectEqual(void, @typeInfo(@TypeOf(WebView.enableDevTools)).@"fn".return_type.?);
 
     // initWithSchemeHandler: added in M4.1. Pin its return type and its
     // `scheme` parameter type — a NUL-terminated sentinel slice that gets
@@ -495,6 +582,20 @@ test "loadHTMLString() tolerates adversarial input headless" {
     defer std.testing.allocator.free(big);
     @memset(big, 'a');
     try wv.loadHTMLString(big);
+}
+
+// --- enableDevTools (headless-safe: KVC on WKPreferences needs no window server) ---
+
+test "enableDevTools() runs without crashing on a live WKWebView" {
+    // KVC setValue:forKey: on WKPreferences is headless-safe — it operates on an
+    // in-process configuration object with no window-server dependency.
+    const wv = try WebView.init();
+    defer wv.deinit();
+
+    wv.enableDevTools();
+
+    // The webview handle must still be valid after the call.
+    try std.testing.expect(wv.ns_webview.value != null);
 }
 
 // --- loadURL: class resolution + selector verification (headless-safe) ---
